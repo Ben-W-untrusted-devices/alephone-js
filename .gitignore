@@ -34,3 +34,22 @@ lib*.a
 /*.tar.bz2
 
 .vscode/
+
+# Belt-and-braces: the real Marathon 2 game data used for local web-port
+# testing must live outside this repo (see CLAUDE.md / WEB_PORT_PLAN.md) and
+# never be committed. These patterns guard against it accidentally ending up
+# inside the tree.
+/Marathon 2/
+/web/testdata/
+*.sceA
+*.shpA
+*.sndA
+*.imgA
+*.phyA
+*.sgaA
+*.filA
+
+# JS/TS tooling under web/
+web/node_modules/
+web/dist/
+web/coverage/

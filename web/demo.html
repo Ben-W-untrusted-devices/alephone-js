@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Aleph One web port -- upload widget demo</title>
+  <style>
+    body { font: 14px system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; }
+    .alephone-upload-widget {
+      border: 2px dashed #888;
+      border-radius: 8px;
+      padding: 2rem;
+      text-align: center;
+      cursor: pointer;
+    }
+    .alephone-upload-widget--dragover {
+      border-color: #2a7;
+      background: #eafaf0;
+    }
+    .alephone-upload-widget__status {
+      color: #555;
+      font-size: 0.9em;
+    }
+    #file-list { font-size: 0.85em; color: #333; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>Upload widget demo</h1>
+  <p>Manual test harness only -- not part of the game. Drop a Marathon
+  scenario folder (e.g. the one used for local testing) below.</p>
+  <div id="widget-root"></div>
+  <pre id="file-list"></pre>
+  <script type="module">
+    import { UploadWidget } from "./src/upload/UploadWidget.js";
+
+    const fileListEl = document.getElementById("file-list");
+    const widget = new UploadWidget({
+      onFilesReady: (files) => {
+        fileListEl.textContent = files
+          .map((f) => `${f.relativePath}  (${f.size} bytes)${f.recognizedType ? "  [" + f.recognizedType.label + "]" : ""}`)
+          .join("\n");
+      },
+    });
+    document.getElementById("widget-root").appendChild(widget.element);
+  </script>
+</body>
+</html>
