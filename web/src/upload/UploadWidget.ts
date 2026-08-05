@@ -4,7 +4,7 @@ import {
   FileCollectionSummary,
   summarize,
   UploadableFile,
-} from "./collectFiles.js";
+} from "./collectFiles";
 
 export interface UploadWidgetOptions {
   /** Called whenever a new set of files replaces the previous one. */
@@ -46,7 +46,13 @@ export class UploadWidget {
     this.input.style.display = "none";
     this.element.appendChild(this.input);
 
-    this.element.addEventListener("click", () => this.input.click());
+    this.element.addEventListener("click", (event) => {
+      // input.click() itself dispatches a bubbling click event, which would
+      // hit this same listener again and recurse forever -- ignore clicks
+      // that already originated from the (hidden) input.
+      if (event.target === this.input) return;
+      this.input.click();
+    });
     this.input.addEventListener("change", () => {
       if (this.input.files) this.handleFiles(collectFromFileList(this.input.files));
     });

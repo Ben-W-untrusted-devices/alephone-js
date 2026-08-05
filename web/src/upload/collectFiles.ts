@@ -1,4 +1,4 @@
-import { KnownFileType, recognizeFileType } from "./knownFileTypes.js";
+import { KnownFileType, recognizeFileType } from "./knownFileTypes";
 
 export interface UploadableFile {
   /** Path relative to the folder the user selected/dropped, using "/" separators. */
