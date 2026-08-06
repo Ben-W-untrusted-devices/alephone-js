@@ -162,6 +162,58 @@ here is implicit, not explicit permission to redistribute.
     deferred via `--without-vpx --without-matroska --without-ebml`, but
     movie playback will need libyuv built for wasm32 eventually (not
     attempted yet — playback itself isn't in scope until later).
+  - **`portable_filesystem.h` needed more than a namespace alias** once real
+    compilation (not just `emconfigure`'s header-existence checks) exercised
+    it. `boost::filesystem` and `std::filesystem` aren't perfectly drop-in
+    compatible: `unique_path()` has no `std::filesystem` equivalent at all;
+    the `file_type` enumerators are named differently (`regular_file`/
+    `directory_file` vs `regular`/`directory`); and `last_write_time()`
+    returns a plain `time_t` in Boost but a strongly-typed
+    `chrono::time_point` in `std::filesystem`, incompatible with the
+    `int`/`TimeType` comparisons the surrounding code did. Added
+    `aone_fs_regular_file`/`aone_fs_directory_file`/`aone_fs_unique_path()`/
+    `aone_fs_file_time_to_time_t()` wrappers to `portable_filesystem.h` to
+    cover this — small, all in one place, all covered by compiling both
+    branches directly (native g++ against Homebrew Boost, `em++` against
+    Emscripten's libc++) rather than only trusting `emconfigure`. One real
+    bug caught this way before it ever reached a build: my first draft of
+    `aone_fs_file_time_to_time_t` took an `aone_fs::file_time_type`
+    parameter, but `boost::filesystem` has no such type at all (its
+    `last_write_time()` just returns `time_t` directly) — fixed by giving
+    each branch its own correctly-typed signature instead of assuming one
+    would work for both. **Lesson**: `emconfigure` succeeding only proves
+    headers exist and link-time libraries are found — it doesn't compile
+    any real code, so API-shape mismatches like this only show up once
+    `emmake make` actually runs.
+  - **`asio.hpp` doesn't just fail its own configure-time header check — it
+    transitively breaks compilation of 43 object files that have nothing to
+    do with networking**, including `shell.cpp` and `marathon2.cpp` (the
+    actual entry point/main loop), `ChaseCam.cpp`, `Console.cpp`,
+    `game_wad.cpp`, `interface.cpp`, `player.cpp`, `screen.cpp`, several
+    `lua_*.cpp` files, and more. The chain: these files include
+    `Misc/sdl_widgets.h` (general dialog/widget UI code) →
+    `Network/Metaserver/metaserver_messages.h` → `Network/network.h` →
+    `TCPMess/CommunicationsChannel.h` → `Network/NetworkInterface.h` →
+    `<asio.hpp>`, which fails to compile under Emscripten regardless of
+    whether the configure-time check ran. This is now the single biggest
+    open blocker for M3b — bigger than GL, since GL only affects rendering
+    files, not the entry point. Not yet decided how to resolve; options,
+    roughly in order of how invasive they are:
+    1. Make `asio.hpp` itself compile under Emscripten (e.g. patch/define
+       around its Windows-or-POSIX-only platform detection). Keeps all
+       existing code untouched but means fighting a library not designed
+       for this target — unclear how deep that rabbit hole goes.
+    2. Break the transitive leak: `sdl_widgets.h` (general UI) pulling in
+       `metaserver_messages.h` (network-specific) is arguably a pre-existing
+       modularity smell independent of the web port — worth understanding
+       *why* before touching it.
+    3. Stub `NetworkInterface.h`'s asio-dependent declarations under
+       `#ifdef __EMSCRIPTEN__` so dependent code still compiles against a
+       no-op interface, deferring real networking implementation entirely
+       (consistent with the existing "networking is a non-goal for now"
+       stance) — most invasive to existing code, but most clearly scoped.
+    Needs a decision before M3b can make much further progress, similar to
+    the GL rendering question.
   - A native (non-Emscripten) `./configure` sanity check hit an unrelated,
     pre-existing environment issue on this machine (Apple clang 17 fails
     this project's C++17-support autoconf check) — confirmed unrelated to
@@ -189,10 +241,16 @@ here is implicit, not explicit permission to redistribute.
 - [x] **M3a — Get `emconfigure ../configure` to complete successfully**
       (reduced feature set: core engine + SDL2, no zip/video/networking) —
       see Findings for exactly how each dependency was resolved.
-- [ ] **M3b — `emmake make`**: get actual object files compiling. Next wall
-      is OpenGL detection (`Not found: OpenGL rendering` — configure didn't
-      error, just silently disabled it), and then the real compile errors
-      from the legacy-GL renderer (see Findings).
+- [x] **M3b-i — Fix the `portable_filesystem.h` gaps `emmake make` surfaced**
+      (see Findings): `boost::filesystem`/`std::filesystem` aren't as
+      drop-in-compatible as the M3a shim assumed.
+- [ ] **M3b-ii — asio.hpp transitively breaks 43 object files, including
+      `shell.cpp`/`marathon2.cpp` (the entry point).** Biggest open blocker
+      right now, bigger than GL — needs an architectural decision, not a
+      mechanical fix. See Findings for the three options; not decided yet.
+- [ ] **M3b-iii — OpenGL detection** (`Not found: OpenGL rendering` —
+      configure didn't error, just silently disabled it), and then the real
+      compile errors from the legacy-GL renderer (see Findings).
   - [ ] Confirm input (keyboard/mouse/gamepad) via SDL2's Emscripten backend
   - [ ] Rendering: **deferred as its own separately-scoped effort, not part
         of M3b.** GL rewrite (legacy compatibility-profile → GLES2/3-shaped,
@@ -213,6 +271,10 @@ here is implicit, not explicit permission to redistribute.
 
 ## Status
 
-M1 (upload widget), M2 (toolchain), and M3a (`emconfigure` completes
-successfully) are done. Next up: M3b — `emmake make`, which will need real
-OpenGL rendering work (see Findings) before it can get very far.
+M1 (upload widget), M2 (toolchain), M3a (`emconfigure` completes
+successfully), and M3b-i (`portable_filesystem.h` gaps fixed) are done.
+Next up: M3b-ii — decide how to handle `asio.hpp` transitively breaking 43
+object files including the entry point (`shell.cpp`/`marathon2.cpp`); needs
+a decision, not just more mechanical fixes. GL rendering (M3b-iii) comes
+after that, and is its own separately-scoped effort (see the rendering note
+above).

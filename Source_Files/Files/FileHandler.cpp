@@ -529,7 +529,7 @@ TimeType FileSpecifier::GetDate()
 	sys::error_code ec;
 	const auto mtime = fs::last_write_time(utf8_to_path(name), ec);
 	err = to_posix_code_or_unknown(ec);
-	return err == 0 ? mtime : 0;
+	return err == 0 ? aone_fs_file_time_to_time_t(mtime) : 0;
 }
 
 static const char * alephone_extensions[] = {
@@ -803,7 +803,7 @@ bool FileSpecifier::SetNameWithPath(const char* NameWithPath, const DirectorySpe
 
 void FileSpecifier::SetTempName(const FileSpecifier& other)
 {
-	name = other.name + fs::unique_path("%%%%%%").string();
+	name = other.name + aone_fs_unique_path("%%%%%%");
 }
 
 // Get last element of path
@@ -888,9 +888,9 @@ bool FileSpecifier::ReadDirectory(vector<dir_entry> &vec)
 		const auto& entry = *it;
 		sys::error_code ignored_ec;
 		const auto type = entry.status(ignored_ec).type();
-		const bool is_dir = type == fs::directory_file;
-		
-		if (!(is_dir || type == fs::regular_file))
+		const bool is_dir = type == aone_fs_directory_file;
+
+		if (!(is_dir || type == aone_fs_regular_file))
 			continue; // skip special or failed-to-stat files
 		
 		const auto basename = entry.path().filename();
@@ -898,7 +898,7 @@ bool FileSpecifier::ReadDirectory(vector<dir_entry> &vec)
 		if (!is_dir && basename.native()[0] == '.')
 			continue; // skip dot-prefixed regular files
 		
-		vec.emplace_back(path_to_utf8(basename), is_dir, fs::last_write_time(entry.path(), ignored_ec));
+		vec.emplace_back(path_to_utf8(basename), is_dir, aone_fs_file_time_to_time_t(fs::last_write_time(entry.path(), ignored_ec)));
 	} 
 	
 	err = to_posix_code_or_unknown(ec);
