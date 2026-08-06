@@ -19,9 +19,21 @@
 #ifndef NETWORK_INTERFACE_H
 #define NETWORK_INTERFACE_H
 
-#include <asio.hpp>
-#include <string>
+// DISABLE_NETWORKING lives in the generated config.h; make sure it's visible
+// here regardless of what the includer has pulled in already (see
+// ../../WEB_PORT_PLAN.md, M3).
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+
+#include <array>
+#include <cstdint>
+#include <memory>
 #include <optional>
+#include <string>
+
+#if !defined(DISABLE_NETWORKING)
+#include <asio.hpp>
 
 class IPaddress {
 private:
@@ -50,6 +62,30 @@ public:
     bool operator==(const IPaddress& other) const;
     bool operator!=(const IPaddress& other) const;
 };
+#else
+// Web port (see WEB_PORT_PLAN.md, M3): a browser has no raw socket API at
+// all, so real networking can't function here regardless of whether asio
+// itself compiles. This and the other stub classes below keep the same
+// public shape as the real ones (trivial/no-op bodies, all inline -- no
+// matching .cpp needed) so that code which merely references these types,
+// without expecting working networking, keeps compiling unchanged.
+class IPaddress {
+public:
+    IPaddress(const std::string& host, uint16_t port) {}
+    IPaddress(const uint8_t ip[4], uint16_t port) {}
+    IPaddress() = default;
+    bool is_v4() const { return true; }
+    std::string address() const { return std::string(); }
+    std::array<unsigned char, 4> address_bytes() const { return {0, 0, 0, 0}; }
+    uint16_t port() const { return 0; }
+    void set_port(uint16_t port) {}
+    void set_address(const std::string& host) {}
+    void set_address(const uint8_t ip[4]) {}
+
+    bool operator==(const IPaddress& other) const { return true; }
+    bool operator!=(const IPaddress& other) const { return false; }
+};
+#endif // !defined(DISABLE_NETWORKING)
 
 /* missing from AppleTalk.h */
 // ZZZ: note that this determines only the amount of storage allocated for packets, not
@@ -64,6 +100,7 @@ struct UDPpacket
     int data_size;
 };
 
+#if !defined(DISABLE_NETWORKING)
 class UDPsocket {
 private:
     asio::io_context& _io_context;
@@ -119,5 +156,40 @@ public:
     std::unique_ptr<TCPlistener> tcp_open_listener(uint16_t port);
     std::optional<IPaddress> resolve_address(const std::string& host, uint16_t port);
 };
+#else
+class UDPsocket {
+public:
+    int64_t broadcast_send(const UDPpacket& packet) { return -1; }
+    int64_t send(const UDPpacket& packet) { return -1; }
+    int64_t receive(UDPpacket& packet) { return -1; }
+    void register_receive_async(UDPpacket& packet) {}
+    int64_t receive_async(int timeout_ms) { return -1; }
+    bool broadcast(bool enable) { return false; }
+    int64_t check_receive() const { return -1; }
+};
+
+class TCPsocket {
+public:
+    int64_t send(uint8_t* buffer, size_t size) { return -1; }
+    int64_t receive(uint8_t* buffer, size_t size) { return -1; }
+    IPaddress remote_address() const { return IPaddress(); }
+    bool set_non_blocking(bool enable) { return false; }
+};
+
+class TCPlistener {
+public:
+    std::unique_ptr<TCPsocket> accept_connection() { return nullptr; }
+    bool set_non_blocking(bool enable) { return false; }
+};
+
+class NetworkInterface {
+public:
+    NetworkInterface() = default;
+    std::unique_ptr<UDPsocket> udp_open_socket(uint16_t port) { return nullptr; }
+    std::unique_ptr<TCPsocket> tcp_connect_socket(const IPaddress& address) { return nullptr; }
+    std::unique_ptr<TCPlistener> tcp_open_listener(uint16_t port) { return nullptr; }
+    std::optional<IPaddress> resolve_address(const std::string& host, uint16_t port) { return std::nullopt; }
+};
+#endif // !defined(DISABLE_NETWORKING)
 
 #endif // NETWORK_INTERFACE_H

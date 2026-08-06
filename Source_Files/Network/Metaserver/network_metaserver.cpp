@@ -22,6 +22,13 @@
 	Created.
  */
 
+// DISABLE_NETWORKING lives in the generated config.h; make sure it's visible
+// here before the check below regardless of what's included later (see
+// ../../WEB_PORT_PLAN.md, M3).
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+
 #if !defined(DISABLE_NETWORKING)
 
 #include "cseries.h"
@@ -157,6 +164,7 @@ const std::vector<GameListMessage::GameListEntry> MetaserverClient::gamesInRoomU
 
 	std::vector<GameListMessage::GameListEntry> games_to_update;
 
+#if !defined(DISABLE_NETWORKING)
 	if (auto pinger = NetGetPinger().lock())
 	{
 		auto games = gamesInRoom();
@@ -197,6 +205,7 @@ const std::vector<GameListMessage::GameListEntry> MetaserverClient::gamesInRoomU
 			m_gamesInRoom.processUpdates(games_to_update);
 		}
 	}
+#endif // !defined(DISABLE_NETWORKING)
 
 	return games_to_update;
 }

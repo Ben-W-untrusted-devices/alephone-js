@@ -25,6 +25,7 @@ AC_DEFUN([AX_ARG_WITH],
            AC_ARG_WITH([$1], AS_HELP_STRING([--without-$1], [do not use $2])) ])
 
 AX_ARG_ENABLE([opengl], [OpenGL rendering])
+AX_ARG_ENABLE([networking], [multiplayer networking support])
 
 AX_ARG_WITH([sdl_image], [SDL2_image support])
 AX_ARG_WITH([curl], [cURL for HTTP communication])
@@ -114,6 +115,22 @@ AC_COMPILE_IFELSE(
   [ax_target_emscripten=no])
 AC_MSG_RESULT([$ax_target_emscripten])
 
+dnl Web port (see WEB_PORT_PLAN.md, M3): a browser has no raw TCP/UDP socket
+dnl API at all (only WebSocket/WebRTC, which the existing asio-based
+dnl NetworkInterface doesn't speak and no peer -- native client, dedicated
+dnl server, metaserver -- would understand anyway without a relay that
+dnl doesn't exist yet). So networking isn't just "doesn't compile", it
+dnl couldn't do anything useful even if it did -- force it off for
+dnl Emscripten regardless of --enable-networking.
+AS_IF([test "x$ax_target_emscripten" = "xyes"],
+      [ AS_IF([test "x$enable_networking" = "xyes"],
+              [AC_MSG_WARN([--enable-networking requested, but networking is not possible from a browser sandbox; disabling anyway])])
+        enable_networking=no
+      ])
+AS_IF([test "x$enable_networking" != "xno"],
+      [have_networking=true],
+      [AC_DEFINE([DISABLE_NETWORKING], [1], [Disable multiplayer networking])])
+
 dnl Check for boost functions and libraries.
 AX_BOOST_BASE([1.69.0],
               ,
@@ -154,13 +171,11 @@ dnl AX_CHECK_BOOST_HEADER([boost/uuid/uuid_generators.hpp])
 dnl AX_CHECK_BOOST_HEADER([boost/uuid/uuid_io.hpp])
 
 dnl Web port (see WEB_PORT_PLAN.md, M3): asio.hpp's own platform detection
-dnl only recognizes Windows or POSIX and doesn't compile as-is under
+dnl also only recognizes Windows or POSIX and doesn't compile as-is under
 dnl Emscripten ("Only Windows and POSIX are supported!" in
-dnl asio/detail/tss_ptr.hpp). Real networking is already a stated non-goal
-dnl for this port for now, so skip the check entirely for Emscripten rather
-dnl than fighting asio's platform detection for a feature nothing uses yet;
-dnl revisit when networking is actually in scope.
-AS_IF([test "x$ax_target_emscripten" != "xyes"],
+dnl asio/detail/tss_ptr.hpp) -- one more reason (on top of the one above)
+dnl this only gets checked when networking is actually enabled.
+AS_IF([test "x$enable_networking" != "xno"],
       [ AC_LANG_PUSH(C++)
         AC_CHECK_HEADER([asio.hpp], , [AC_MSG_ERROR([You need asio to build Aleph One.])])
         AC_LANG_POP(C++)
@@ -377,6 +392,7 @@ AS_ECHO([""])
 AS_ECHO(["Summary of optional features:"])
 AS_ECHO([""])
 AX_PRINT_SUMMARY([opengl])
+AX_PRINT_SUMMARY([networking])
 AX_PRINT_SUMMARY([sdl_image])
 AX_PRINT_SUMMARY([curl])
 AX_PRINT_SUMMARY([zzip])

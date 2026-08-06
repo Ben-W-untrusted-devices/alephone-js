@@ -18,6 +18,11 @@
 
 #include "NetworkInterface.h"
 
+// Web port (see WEB_PORT_PLAN.md, M3): NetworkInterface.h provides inline
+// no-op stub class bodies under DISABLE_NETWORKING, so there's nothing left
+// for this file to define in that case.
+#if !defined(DISABLE_NETWORKING)
+
 IPaddress::IPaddress(const asio::ip::tcp::endpoint& endpoint)
 {
     _address = endpoint.address();
@@ -219,3 +224,5 @@ std::optional<IPaddress> NetworkInterface::resolve_address(const std::string& ho
 
     return std::nullopt;
 }
+
+#endif // !defined(DISABLE_NETWORKING)

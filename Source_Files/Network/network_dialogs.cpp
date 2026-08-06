@@ -66,6 +66,13 @@ Apr 10, 2003 (Woody Zenfell):
 	and more consistent with other dialog code
 */
 
+// DISABLE_NETWORKING lives in the generated config.h; make sure it's visible
+// here before the check below regardless of what's included later (see
+// ../../WEB_PORT_PLAN.md, M3).
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+
 #if !defined(DISABLE_NETWORKING)
 
 #include	"cseries.h"
@@ -191,6 +198,7 @@ static uint16 network_gather_remote_hub()
 
 	NetCreatePinger();
 
+#if !defined(DISABLE_NETWORKING)
 	if (auto pinger = NetGetPinger().lock()) //there is a problem if it fails
 	{
 		for (const auto& remote_hub : remote_hubs)
@@ -222,6 +230,7 @@ static uint16 network_gather_remote_hub()
 			}
 		}
 	}
+#endif // !defined(DISABLE_NETWORKING)
 
 	if (!remote_hub_id)
 	{

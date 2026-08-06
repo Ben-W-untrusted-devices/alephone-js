@@ -14,10 +14,16 @@ re-discovering later.
   loading (no real filesystem on the web) and anything that turns out not to
   be covered by SDL2's Emscripten backend.
 
-## Non-goal (for now)
+## Non-goal
 
-- Networked multiplayer (SDL_net/TCPMess) — deferred until the single-player
-  path works end to end.
+- Networked multiplayer (SDL_net/TCPMess/asio) — not just deferred, actually
+  impossible from a browser tab as this codebase's networking is designed:
+  browsers have no raw TCP/UDP socket API at all (only WebSocket/WebRTC),
+  and no native peer (client, dedicated server, metaserver) speaks either of
+  those. Real cross-play would need a purpose-built relay/gateway server as
+  its own separate, later project — not a byproduct of getting asio to
+  compile. Networking is compiled out entirely for the Emscripten build via
+  `DISABLE_NETWORKING` (see Findings) rather than reimplemented.
 
 ## Working conventions
 
@@ -214,6 +220,85 @@ here is implicit, not explicit permission to redistribute.
        stance) — most invasive to existing code, but most clearly scoped.
     Needs a decision before M3b can make much further progress, similar to
     the GL rendering question.
+  - **Decision on the asio leak: compile networking out entirely
+    (option 3 above), because browsers can't do real networking regardless.**
+    Browsers have no raw TCP/UDP socket API at all — only WebSocket (needs
+    the peer to speak the WebSocket handshake) and WebRTC DataChannels
+    (needs ICE/DTLS/SCTP negotiation on both ends). This codebase's
+    networking (`NetworkInterface`/`TCPMess`/metaserver) uses plain
+    asio sockets, same as every native peer (client, dedicated server,
+    metaserver) it talks to — a browser tab can't open a socket to any of
+    them no matter how the code compiles. Getting `asio.hpp` to compile
+    (option 1) would've been wasted effort: even a working compile wouldn't
+    produce a socket that reaches an existing native peer without a
+    purpose-built WebSocket/WebRTC relay, which is a separate, later,
+    deliberately-designed project, not a build-flag fix.
+  - **The codebase already had a `DISABLE_NETWORKING` convention, just never
+    finished/wired up** — worth reusing rather than inventing a new scheme.
+    `configure.ac` now has a real `--disable-networking`/`--enable-networking`
+    flag (`AX_ARG_ENABLE([networking], ...)`, matching the existing `opengl`
+    pattern), forced off automatically for the Emscripten target regardless
+    of what's passed (real networking is impossible there, not just
+    undesired), `AC_DEFINE([DISABLE_NETWORKING], [1], ...)`-ing it into
+    `config.h`. `NetworkInterface.h` gained a full `#else` branch: trivial,
+    inline, no-op stand-ins for `IPaddress`/`UDPsocket`/`TCPsocket`/
+    `TCPlistener`/`NetworkInterface` with the same public shape as the real
+    classes (so code that merely references these types keeps compiling),
+    and `NetworkInterface.cpp` became a no-op translation unit in that case.
+    `network.cpp` already had a `#if defined(DISABLE_NETWORKING) #include
+    "network_dummy.cpp" #else ... #endif` pattern from a previous, never-
+    completed attempt at this — `network_games.cpp` has the equivalent
+    whole-file-guarded pattern too. A handful of call sites
+    (`network_dialogs.cpp`, `network_metaserver.cpp`, `network_star_spoke.cpp`)
+    called `NetGetPinger()` — the one function `network.h` actually guards —
+    unconditionally; wrapped those in `#if !defined(DISABLE_NETWORKING)` too.
+  - **Widespread latent bug found while wiring this up: many of these
+    `#if !defined(DISABLE_NETWORKING)` checks ran before `config.h` was ever
+    included**, so the macro was never visible and the check silently always
+    took the "networking enabled" branch — meaning this existing convention
+    had likely never actually been exercised/tested before. Root cause:
+    `DISABLE_NETWORKING` only exists inside the generated `config.h`, which
+    is only pulled in via `#ifdef HAVE_CONFIG_H #include "config.h" #endif`
+    in `cseries.h` — and roughly 15 files
+    (`NetworkInterface.{h,cpp}`, `network.cpp`, `network_games.cpp`,
+    `network_dialogs.cpp`, `network_metaserver.cpp`, `StarGameProtocol.cpp`,
+    `network_star_spoke.cpp`, `network_star_hub.cpp`, `Pinger.{h,cpp}`,
+    `network_dialog_widgets_sdl.cpp`, `network_messages.cpp`,
+    `network_udp.cpp`, `metaserver_dialogs.cpp`, `metaserver_messages.cpp`,
+    `SdlMetaserverClientUi.cpp`, `CommunicationsChannel.cpp`, `Message.cpp`,
+    `MessageInflater.cpp`, `main.cpp`) had their `#if !defined(DISABLE_NETWORKING)`
+    check as the very first thing after the license header, before any
+    include at all. Fixed each with an explicit
+    `#ifdef HAVE_CONFIG_H #include "config.h" #endif` immediately before the
+    check. (Ran a heuristic check across every `DISABLE_NETWORKING` call
+    site first to see which were actually at risk — most other usages, deep
+    inside otherwise-normal files, were fine because those files already
+    pull in `cseries.h` transitively via other early includes.)
+  - **Result: `emmake make` now gets all the way to the real final link step
+    for `alephone.wasm`** — genuine progress, not just per-file compilation.
+    The 43-object-file compile-error wall from the asio leak, and the
+    `network_dummy.cpp` incompleteness (duplicate `network_join`/
+    `display_net_game_stats` symbols once `network_games.cpp`'s real
+    implementation and the dummy's stub both compiled in) are both fully
+    resolved — verified via a clean rebuild (`rm -rf build-wasm`), not just
+    incremental, to rule out stale-object-file explanations.
+  - **New next wall, found only once the real link was reached: a
+    pthread/shared-memory ABI mismatch.** `wasm-ld` reports `shell.o` (and
+    other project object files) as "not compiled with 'atomics' or
+    'bulk-memory' features," while the final link command includes
+    `--shared-memory`/`--import-memory` and links against `-mt`-suffixed
+    (multi-threaded) Emscripten runtime libraries (`-lc-mt`, `-lc++-mt-noexcept`,
+    etc.) — i.e., something in the link inputs (most likely the vcpkg-built
+    SDL2/openal-soft/etc., though not yet confirmed which) expects
+    Emscripten's threaded runtime, while this project's own sources compile
+    without `-pthread`. Symptom: many core SDL symbols
+    (`SDL_RWseek`/`SDL_RWtell`/`SDL_RWread`/`SDL_RWwrite`/`SDL_RWclose`/
+    `SDL_EventState`/`SDL_free`/`SDL_WaitEventTimeout`/`SDL_ShowSimpleMessageBox`)
+    come up as undefined at link time. Not yet root-caused — worth its own
+    focused investigation (check whether the vcpkg community
+    `wasm32-emscripten` triplet or one of the cross-built libraries defaults
+    to pthreads, and either match that in our own build or turn it off
+    consistently everywhere) rather than guessing at a fix blind.
   - A native (non-Emscripten) `./configure` sanity check hit an unrelated,
     pre-existing environment issue on this machine (Apple clang 17 fails
     this project's C++17-support autoconf check) — confirmed unrelated to
@@ -244,11 +329,15 @@ here is implicit, not explicit permission to redistribute.
 - [x] **M3b-i — Fix the `portable_filesystem.h` gaps `emmake make` surfaced**
       (see Findings): `boost::filesystem`/`std::filesystem` aren't as
       drop-in-compatible as the M3a shim assumed.
-- [ ] **M3b-ii — asio.hpp transitively breaks 43 object files, including
-      `shell.cpp`/`marathon2.cpp` (the entry point).** Biggest open blocker
-      right now, bigger than GL — needs an architectural decision, not a
-      mechanical fix. See Findings for the three options; not decided yet.
-- [ ] **M3b-iii — OpenGL detection** (`Not found: OpenGL rendering` —
+- [x] **M3b-ii — Compile networking out entirely via `DISABLE_NETWORKING`**
+      (see Findings). This was the decision from the asio-leak finding:
+      browsers can't do real networking at all, so there's nothing to
+      preserve by fighting asio's platform detection. `emmake make` now gets
+      all the way to the final `alephone.wasm` link step.
+- [ ] **M3b-iii — pthread/shared-memory ABI mismatch at the final link step**
+      (see Findings) — new next wall, found only once M3b-ii got far enough
+      to actually attempt the real link. Not yet root-caused.
+- [ ] **M3b-iv — OpenGL detection** (`Not found: OpenGL rendering` —
       configure didn't error, just silently disabled it), and then the real
       compile errors from the legacy-GL renderer (see Findings).
   - [ ] Confirm input (keyboard/mouse/gamepad) via SDL2's Emscripten backend
@@ -272,9 +361,10 @@ here is implicit, not explicit permission to redistribute.
 ## Status
 
 M1 (upload widget), M2 (toolchain), M3a (`emconfigure` completes
-successfully), and M3b-i (`portable_filesystem.h` gaps fixed) are done.
-Next up: M3b-ii — decide how to handle `asio.hpp` transitively breaking 43
-object files including the entry point (`shell.cpp`/`marathon2.cpp`); needs
-a decision, not just more mechanical fixes. GL rendering (M3b-iii) comes
-after that, and is its own separately-scoped effort (see the rendering note
-above).
+successfully), M3b-i (`portable_filesystem.h` gaps fixed), and M3b-ii
+(networking compiled out via `DISABLE_NETWORKING`) are done. `emmake make`
+now reaches the actual final link step for `alephone.wasm` — real progress,
+not just per-file compilation. Next up: M3b-iii, a pthread/shared-memory ABI
+mismatch at that link step (see Findings) — not yet root-caused, worth its
+own focused pass. GL rendering (M3b-iv) comes after that, and is its own
+separately-scoped effort (see the rendering note above).

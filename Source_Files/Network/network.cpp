@@ -96,6 +96,13 @@ September 17, 2004 (jkvw):
 	Also moved to TCPMess for TCP communications.
 */
 
+// DISABLE_NETWORKING lives in the generated config.h; make sure it's visible
+// here before the check below regardless of what's included later (see
+// ../../WEB_PORT_PLAN.md, M3).
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+
 #if defined(DISABLE_NETWORKING)
 
 #include "network_dummy.cpp"

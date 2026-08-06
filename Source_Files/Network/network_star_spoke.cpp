@@ -33,6 +33,13 @@
  *	Hub can then associate the ID in the identification packet with the paket's source address.
  */
 
+// DISABLE_NETWORKING lives in the generated config.h; make sure it's visible
+// here before the check below regardless of what's included later (see
+// ../../WEB_PORT_PLAN.md, M3).
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+
 #if !defined(DISABLE_NETWORKING)
 
 #include "network_star.h"
@@ -659,10 +666,12 @@ spoke_received_ping_response(AIStream& ps, const IPaddress& address)
 	uint16 pingIdentifier;
 	ps >> pingIdentifier;
 
+#if !defined(DISABLE_NETWORKING)
 	if (auto pinger = NetGetPinger().lock())
 		pinger->StoreResponse(pingIdentifier, address);
 	else
 		logWarningNMT("Received unexpected ping response packet");
+#endif // !defined(DISABLE_NETWORKING)
 } // spoke_received_ping_response()
 
 
