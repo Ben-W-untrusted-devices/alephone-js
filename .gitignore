@@ -53,3 +53,7 @@ lib*.a
 web/node_modules/
 web/dist/
 web/coverage/
+
+# Out-of-tree Emscripten build directory (emconfigure/emmake), see
+# WEB_PORT_PLAN.md M2/M3.
+/build-wasm/

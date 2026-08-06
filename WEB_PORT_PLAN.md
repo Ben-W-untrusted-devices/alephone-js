@@ -75,9 +75,37 @@ here is implicit, not explicit permission to redistribute.
   rather than the main extension table. Useful for light, non-blocking
   recognition in the upload widget — not for hard validation, since plugins
   and scripts don't follow this table.
-- No Emscripten toolchain is installed in this environment yet (`emcc` not
-  found); that's its own milestone (M2 below), independent of the upload
-  widget work in M1.
+- **Emscripten toolchain is installed and proven against this codebase's
+  real build system.** `emsdk` (pinned at 6.0.6) lives at `../emsdk` —
+  a sibling of this repo, like `../Marathon 2`, since it's toolchain, not
+  project source, and shouldn't bloat the repo. It's on `PATH` in every
+  shell via `~/.zprofile` sourcing `emsdk_env.sh`. `emconfigure ../configure`
+  (run from a `build-wasm/` directory, gitignored) correctly detects `emcc`/
+  `em++` as the compiler and gets all the way through the standard autoconf
+  checks — it only stops at Boost detection, because Boost isn't built for
+  the `wasm32-unknown-emscripten` target yet. That's expected, not a
+  toolchain problem.
+- **Dependency landscape for M3**, from
+  [vcpkg.json](vcpkg.json): Boost (algorithm/uuid/property_tree/iostreams/
+  filesystem/lockfree/dll), SDL2 + SDL2_image + SDL2_ttf, asio, zziplib,
+  miniupnpc, nativefiledialog-extended, libsndfile, openal-soft, catch2,
+  libyuv, steamworks-sdk, matroska, libvpx. Rough triage:
+  - SDL2 (+ SDL2_image) ships as an Emscripten *port*
+    (`-sUSE_SDL=2`/`-sUSE_SDL_IMAGE=2`) — no separate build needed, this is
+    the point of M3's SDL findings above.
+  - openal-soft has an Emscripten port too (`-sUSE_OPENAL=1`) — candidate
+    for M5 (audio) instead of building the real library.
+  - Boost: mostly header-only for what this project uses, except
+    Boost.Filesystem, which needs an actual compiled library for the wasm32
+    target (build it with `emconfigure`/`b2`, or reduce reliance on it in
+    favor of Emscripten's MEMFS-backed POSIX calls where the code allows).
+  - nativefiledialog-extended, miniupnpc, steamworks-sdk: not applicable on
+    the web (native file dialogs → our upload widget; NAT traversal/Steam →
+    not relevant to a browser build) — should be `#ifdef`'d out for the web
+    target rather than ported.
+  - zziplib, libsndfile, matroska, libvpx, asio: still need a real decision
+    (build for wasm32, replace with a browser-native equivalent, or defer
+    the feature) — not yet investigated.
 
 ## Milestones / Task list
 
@@ -91,11 +119,15 @@ here is implicit, not explicit permission to redistribute.
   - [ ] Unit tests (Vitest + jsdom)
   - [ ] Integration test against the real Marathon 2 data (reads from
         outside the repo, skips if absent)
-- [ ] **M2 — Emscripten toolchain**
-  - [ ] Install/document emsdk setup
-  - [ ] Minimal build target compiling a small subset of `Source_Files` to
-        prove the toolchain works
+- [x] **M2 — Emscripten toolchain**
+  - [x] Install/document emsdk setup (`../emsdk`, see Findings)
+  - [x] Prove the toolchain works against the real build: `emconfigure
+        ../configure` correctly drives `emcc`/`em++` through the standard
+        autoconf checks (from a gitignored `build-wasm/` dir)
 - [ ] **M3 — Engine build against Emscripten's SDL2 port**
+  - [ ] Get each vcpkg dependency building for wasm32 (or replaced/deferred
+        per the triage in Findings) so `emconfigure`/`emmake` can get past
+        Boost/SDL2/etc. detection and actually build objects
   - [ ] Confirm input (keyboard/mouse/gamepad) via SDL2's Emscripten backend
   - [ ] Confirm rendering (RenderMain/RenderOther GL calls) via Emscripten's
         GL→WebGL translation
@@ -109,4 +141,6 @@ here is implicit, not explicit permission to redistribute.
 
 ## Status
 
-Currently working M1 (upload widget).
+M1 (upload widget) and M2 (toolchain) are done. Next up: M3, starting with
+the dependency triage above — Boost.Filesystem is the first concrete thing
+blocking `emconfigure` from getting past the detection phase.
