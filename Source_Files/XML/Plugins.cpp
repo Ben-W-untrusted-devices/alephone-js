@@ -148,7 +148,7 @@ Plugins* Plugins::instance() {
 	return m_instance;
 }
 
-bool Plugins::disable(const boost::filesystem::path& path) { //std path is not supported before mac os 10.15 so we are using boost path instead
+bool Plugins::disable(const aone_fs::path& path) { //std path is not supported before mac os 10.15 so we are using boost path instead (aone_fs picks std::filesystem under Emscripten -- see portable_filesystem.h)
 	for (std::vector<Plugin>::iterator it = m_plugins.begin(); it != m_plugins.end(); ++it) {
 		if (it->directory.GetPath() == path) {
 			it->enabled = false;
@@ -160,7 +160,7 @@ bool Plugins::disable(const boost::filesystem::path& path) { //std path is not s
 	return false;
 }
 
-bool Plugins::enable(const boost::filesystem::path& path)
+bool Plugins::enable(const aone_fs::path& path)
 {
 	for (auto& p : m_plugins)
 	{

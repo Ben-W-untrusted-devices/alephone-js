@@ -85,52 +85,117 @@ here is implicit, not explicit permission to redistribute.
   checks — it only stops at Boost detection, because Boost isn't built for
   the `wasm32-unknown-emscripten` target yet. That's expected, not a
   toolchain problem.
-- **Dependency landscape for M3**, from
-  [vcpkg.json](vcpkg.json): Boost (algorithm/uuid/property_tree/iostreams/
-  filesystem/lockfree/dll), SDL2 + SDL2_image + SDL2_ttf, asio, zziplib,
-  miniupnpc, nativefiledialog-extended, libsndfile, openal-soft, catch2,
-  libyuv, steamworks-sdk, matroska, libvpx. Rough triage:
-  - SDL2 (+ SDL2_image) ships as an Emscripten *port*
-    (`-sUSE_SDL=2`/`-sUSE_SDL_IMAGE=2`) — no separate build needed, this is
-    the point of M3's SDL findings above.
-  - openal-soft has an Emscripten port too (`-sUSE_OPENAL=1`) — candidate
-    for M5 (audio) instead of building the real library.
-  - Boost: mostly header-only for what this project uses, except
-    Boost.Filesystem, which needs an actual compiled library for the wasm32
-    target (build it with `emconfigure`/`b2`, or reduce reliance on it in
-    favor of Emscripten's MEMFS-backed POSIX calls where the code allows).
-  - nativefiledialog-extended, miniupnpc, steamworks-sdk: not applicable on
-    the web (native file dialogs → our upload widget; NAT traversal/Steam →
-    not relevant to a browser build) — should be `#ifdef`'d out for the web
-    target rather than ported.
-  - zziplib, libsndfile, matroska, libvpx, asio: still need a real decision
-    (build for wasm32, replace with a browser-native equivalent, or defer
-    the feature) — not yet investigated.
+- **How `emconfigure ../configure` was actually gotten to complete (M3a),
+  and what to reuse next time:**
+  - **Boost::Filesystem was eliminated, not cross-built.** Added
+    [Source_Files/CSeries/portable_filesystem.h](Source_Files/CSeries/portable_filesystem.h),
+    which aliases `aone_fs`/`aone_sys` to `std::filesystem`/`std` under
+    `__EMSCRIPTEN__` and to `boost::filesystem`/`boost::system` otherwise.
+    The only reason this codebase used `boost::filesystem` at all was pre-
+    macOS-10.15 `std::filesystem` support (see the comment in
+    `Source_Files/XML/Plugins.cpp`), which doesn't apply to Emscripten's
+    libc++. Repointed the 4 call sites
+    (`Files/FileHandler.cpp`, `XML/Plugins.{h,cpp}`, `Misc/preferences.cpp`).
+    `configure.ac` now does an `AC_COMPILE_IFELSE` check for `__EMSCRIPTEN__`
+    (`$host` stays the native triplet under `emconfigure` — it doesn't set
+    `--host`, so `$host`-based detection doesn't work; a real compile check
+    does) and skips the hard `AX_BOOST_FILESYSTEM` link-check when true.
+    `AX_BOOST_BASE` (headers + version, no link step) still runs for both.
+  - **`asio.hpp` doesn't compile under Emscripten as shipped** — its
+    platform detection only recognizes Windows/POSIX and fails in
+    `asio/detail/tss_ptr.hpp` ("Only Windows and POSIX are supported!").
+    Since networked multiplayer is already a stated non-goal for now, the
+    `AC_CHECK_HEADER([asio.hpp])` check is skipped for Emscripten in
+    `configure.ac` too, same pattern as Boost::Filesystem. Revisit if/when
+    networking actually comes into scope.
+  - **vcpkg's community `wasm32-emscripten` triplet (ships in vcpkg itself,
+    `triplets/community/wasm32-emscripten.cmake`) reliably cross-builds
+    CMake-based ports** — no custom triplet needed, it auto-detects `$EMSDK`.
+    Used it to build real SDL2, SDL2_ttf, libsndfile, and openal-soft for
+    wasm32, all via `vcpkg/install-wasm32-emscripten.sh` (repo-tracked,
+    mirrors the existing `install-<triplet>.sh` scripts, but installs an
+    explicit minimal port list in `--classic` mode rather than the full
+    manifest — most of `vcpkg.json` doesn't apply to a browser build).
+    Each of these produced a correct `.pc` pkg-config file, so `configure.ac`'s
+    *existing* `PKG_CHECK_MODULES`-based detection worked completely
+    unmodified — this ended up being simpler than routing through
+    Emscripten's own SDL2/OpenAL *ports* (`-sUSE_SDL=2`/`-sUSE_OPENAL=1`),
+    since it reuses the autotools detection this project already has. Real
+    upstream SDL2 already contains a genuine Emscripten backend
+    (`src/video/emscripten/`), so this isn't a lesser substitute.
+  - **`libsndfile`'s default vcpkg features pull in `mp3lame`, which fails
+    to cross-build** (its own autotools script doesn't like the
+    `wasm32-unknown-emscripten` host triplet). Not needed — installed as
+    `libsndfile[core,external-libs]` (FLAC/Vorbis/Opus only, no MP3) instead
+    of chasing mp3lame's build.
+  - **Real `openal-soft` (not Emscripten's minimal built-in port) built
+    cleanly for wasm32.** This likely resolves the `ALC_SOFT_loopback`/EFX
+    risk flagged earlier (Emscripten's built-in OpenAL port lacks both) —
+    worth confirming at runtime once there's something to run (M5), but the
+    build-time risk is gone.
+  - **Toolchain pieces now needed to reproduce this build**, none of them
+    in the repo (same reasoning as `../emsdk`, `../Marathon 2`): a
+    bootstrapped vcpkg *tool* checkout (this session used
+    `../vcpkg-tool`, separate from this repo's tracked `vcpkg/`
+    triplets-and-scripts directory) referenced via `~/.vcpkg/vcpkg.path.txt`
+    per this project's existing convention; Homebrew `boost` and `asio`
+    (their *headers* satisfy `AX_BOOST_BASE`/the asio check for the *native*
+    macOS host build — architecture-independent, no cross-compilation
+    needed for headers-only checks).
+  - **Not found: OpenGL rendering** — configure didn't error (it's an
+    optional `AC_ARG_ENABLE`), just silently disabled it, since nothing
+    provides GL headers/libs for the wasm32 target yet. This is the next
+    wall for M3b, and it's a real one: `RenderMain`/`RenderOther` use
+    legacy compatibility-profile GL (fixed-function matrix/vertex-array
+    state via `glMatrixMode`/`glEnableClientState`/`GL_DOUBLE` vertex
+    arrays, plus an ARB-extension shader path —
+    `glShaderSourceARB`/`glCreateProgramObjectARB` in `OGL_Shader.cpp`), not
+    GLES2/3-shaped code. Emscripten's GL→WebGL translation targets GLES2/3;
+    getting this rendering means real adaptation work (rewrite to VBOs +
+    core GLSL), not just wiring up `-sUSE_WEBGL2=1` and recompiling.
+  - **libyuv is entangled in movie *playback*, not just recording** —
+    `Misc/interface.cpp` uses it for color conversion
+    (`I420ToRGBA`/`I420Scale`) when playing intro/cutscene movies (decoded
+    via the bundled `pl_mpeg`, unrelated to libvpx/matroska). The
+    recording-only path (`Movie.cpp`, VP8/MKV export via libvpx/matroska)
+    already has a working `#ifndef FILM_EXPORT` stub and was cleanly
+    deferred via `--without-vpx --without-matroska --without-ebml`, but
+    movie playback will need libyuv built for wasm32 eventually (not
+    attempted yet — playback itself isn't in scope until later).
+  - A native (non-Emscripten) `./configure` sanity check hit an unrelated,
+    pre-existing environment issue on this machine (Apple clang 17 fails
+    this project's C++17-support autoconf check) — confirmed unrelated to
+    this session's changes, since it fails at an earlier, independent check
+    before the code touched here even runs. Not investigated further; not
+    a regression.
 
 ## Milestones / Task list
 
-- [ ] **M1 — Data-provisioning upload widget** (`web/`, pure JS/TS, no WASM
+- [x] **M1 — Data-provisioning upload widget** (`web/`, pure JS/TS, no WASM
       dependency, can be built and tested right now)
-  - [ ] Multi-file / folder drag-and-drop + `<input>` fallback
-  - [ ] Light, friendly recognition summary (spot known scenario file types;
+  - [x] Multi-file / folder drag-and-drop + `<input>` fallback
+  - [x] Light, friendly recognition summary (spot known scenario file types;
         don't hard-block unrecognized files)
-  - [ ] In-memory file collection abstraction, shaped so it can be wired into
+  - [x] In-memory file collection abstraction, shaped so it can be wired into
         an Emscripten MEMFS/IDBFS bridge later without redesign
-  - [ ] Unit tests (Vitest + jsdom)
-  - [ ] Integration test against the real Marathon 2 data (reads from
+  - [x] Unit tests (Vitest + jsdom)
+  - [x] Integration test against the real Marathon 2 data (reads from
         outside the repo, skips if absent)
 - [x] **M2 — Emscripten toolchain**
   - [x] Install/document emsdk setup (`../emsdk`, see Findings)
   - [x] Prove the toolchain works against the real build: `emconfigure
         ../configure` correctly drives `emcc`/`em++` through the standard
         autoconf checks (from a gitignored `build-wasm/` dir)
-- [ ] **M3 — Engine build against Emscripten's SDL2 port**
-  - [ ] Get each vcpkg dependency building for wasm32 (or replaced/deferred
-        per the triage in Findings) so `emconfigure`/`emmake` can get past
-        Boost/SDL2/etc. detection and actually build objects
+- [x] **M3a — Get `emconfigure ../configure` to complete successfully**
+      (reduced feature set: core engine + SDL2, no zip/video/networking) —
+      see Findings for exactly how each dependency was resolved.
+- [ ] **M3b — `emmake make`**: get actual object files compiling. Next wall
+      is OpenGL detection (`Not found: OpenGL rendering` — configure didn't
+      error, just silently disabled it), and then the real compile errors
+      from the legacy-GL renderer (see Findings).
   - [ ] Confirm input (keyboard/mouse/gamepad) via SDL2's Emscripten backend
-  - [ ] Confirm rendering (RenderMain/RenderOther GL calls) via Emscripten's
-        GL→WebGL translation
+  - [ ] Confirm rendering (RenderMain/RenderOther GL calls) — needs real
+        adaptation work, not just a recompile (see Findings)
 - [ ] **M4 — Filesystem bridge**
   - [ ] Feed files collected by the M1 widget into MEMFS at the paths
         `find_files_sdl.cpp`/`FileHandler` expect
@@ -141,6 +206,6 @@ here is implicit, not explicit permission to redistribute.
 
 ## Status
 
-M1 (upload widget) and M2 (toolchain) are done. Next up: M3, starting with
-the dependency triage above — Boost.Filesystem is the first concrete thing
-blocking `emconfigure` from getting past the detection phase.
+M1 (upload widget), M2 (toolchain), and M3a (`emconfigure` completes
+successfully) are done. Next up: M3b — `emmake make`, which will need real
+OpenGL rendering work (see Findings) before it can get very far.

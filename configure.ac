@@ -96,15 +96,35 @@ AC_DEFINE_UNQUOTED([TARGET_PLATFORM], ["$target_os $target_cpu"], [Target platfo
 dnl Check for headers.
 AC_CHECK_HEADERS([unistd.h pwd.h])
 
+dnl Web port (see WEB_PORT_PLAN.md, M3): emconfigure doesn't set --host, so
+dnl $host/$target still report the native build machine even when $CC is
+dnl emcc -- detect Emscripten with an actual compile check instead. Used
+dnl below to skip the hard Boost::Filesystem link requirement, since the
+dnl Emscripten build uses std::filesystem via
+dnl Source_Files/CSeries/portable_filesystem.h and doesn't need a compiled
+dnl libboost_filesystem for wasm32 (which is fragile to cross-build).
+AC_MSG_CHECKING([whether we are targeting Emscripten])
+AC_COMPILE_IFELSE(
+  [AC_LANG_PROGRAM([[
+#ifndef __EMSCRIPTEN__
+#error not emscripten
+#endif
+  ]], [[]])],
+  [ax_target_emscripten=yes],
+  [ax_target_emscripten=no])
+AC_MSG_RESULT([$ax_target_emscripten])
+
 dnl Check for boost functions and libraries.
 AX_BOOST_BASE([1.69.0],
               ,
               [AC_MSG_ERROR([You need Boost 1.69.0 or higher to build Aleph One.])])
-AX_BOOST_FILESYSTEM
-AS_IF([ test "x$BOOST_FILESYSTEM_LIB" != "x" ],
-      [ LIBS="$BOOST_FILESYSTEM_LIB $LIBS" ],
-      [AC_MSG_ERROR([You need the Boost::Filesystem library to run Aleph One.])])
-      
+AS_IF([test "x$ax_target_emscripten" != "xyes"],
+      [ AX_BOOST_FILESYSTEM
+        AS_IF([ test "x$BOOST_FILESYSTEM_LIB" != "x" ],
+              [ LIBS="$BOOST_FILESYSTEM_LIB $LIBS" ],
+              [AC_MSG_ERROR([You need the Boost::Filesystem library to run Aleph One.])])
+      ])
+
 AC_DEFUN([AX_CHECK_BOOST_HEADER],
          [ AC_LANG_PUSH(C++)
            AC_CHECK_HEADER([$1], , [AC_MSG_ERROR([You need $1 from the Boost library to build Aleph One.])])
@@ -133,9 +153,18 @@ AX_CHECK_BOOST_HEADER([boost/uuid/uuid.hpp])
 dnl AX_CHECK_BOOST_HEADER([boost/uuid/uuid_generators.hpp])
 dnl AX_CHECK_BOOST_HEADER([boost/uuid/uuid_io.hpp])
 
-AC_LANG_PUSH(C++)
-AC_CHECK_HEADER([asio.hpp], , [AC_MSG_ERROR([You need asio to build Aleph One.])])
-AC_LANG_POP(C++)
+dnl Web port (see WEB_PORT_PLAN.md, M3): asio.hpp's own platform detection
+dnl only recognizes Windows or POSIX and doesn't compile as-is under
+dnl Emscripten ("Only Windows and POSIX are supported!" in
+dnl asio/detail/tss_ptr.hpp). Real networking is already a stated non-goal
+dnl for this port for now, so skip the check entirely for Emscripten rather
+dnl than fighting asio's platform detection for a feature nothing uses yet;
+dnl revisit when networking is actually in scope.
+AS_IF([test "x$ax_target_emscripten" != "xyes"],
+      [ AC_LANG_PUSH(C++)
+        AC_CHECK_HEADER([asio.hpp], , [AC_MSG_ERROR([You need asio to build Aleph One.])])
+        AC_LANG_POP(C++)
+      ])
 
 dnl Check for library functions.
 AC_CHECK_FUNCS([snprintf vsnprintf], , AC_MSG_ERROR([You need snprintf and vsnprintf to run Aleph One.]))     

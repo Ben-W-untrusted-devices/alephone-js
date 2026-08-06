@@ -30,7 +30,7 @@
 #include <string>
 #include <vector>
 
-#include <boost/filesystem.hpp>
+#include "portable_filesystem.h"
 
 #include "FileHandler.h"
 
@@ -128,8 +128,8 @@ public:
 	void load_shapes_patches(bool opengl);
 	void load_sounds_patches();
 
-	bool disable(const boost::filesystem::path& path);
-	bool enable(const boost::filesystem::path& path);
+	bool disable(const aone_fs::path& path);
+	bool enable(const aone_fs::path& path);
 
 	iterator begin() { return m_plugins.begin(); }
 	iterator end() { return m_plugins.end(); }

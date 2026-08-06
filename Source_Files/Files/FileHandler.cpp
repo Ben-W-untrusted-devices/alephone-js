@@ -78,7 +78,7 @@
 #include "preferences.h"
 
 #include <boost/algorithm/string/predicate.hpp>
-#include <boost/filesystem.hpp>
+#include "portable_filesystem.h"
 
 #ifdef HAVE_NFD
 #include "nfd.h"
@@ -86,8 +86,8 @@
 #endif
 
 namespace io = boost::iostreams;
-namespace sys = boost::system;
-namespace fs = boost::filesystem;
+namespace sys = aone_sys;
+namespace fs = aone_fs;
 
 // From shell_sdl.cpp
 extern vector<DirectorySpecifier> data_search_path;
