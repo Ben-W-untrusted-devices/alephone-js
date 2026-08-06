@@ -283,22 +283,53 @@ here is implicit, not explicit permission to redistribute.
     resolved — verified via a clean rebuild (`rm -rf build-wasm`), not just
     incremental, to rule out stale-object-file explanations.
   - **New next wall, found only once the real link was reached: a
-    pthread/shared-memory ABI mismatch.** `wasm-ld` reports `shell.o` (and
-    other project object files) as "not compiled with 'atomics' or
-    'bulk-memory' features," while the final link command includes
-    `--shared-memory`/`--import-memory` and links against `-mt`-suffixed
-    (multi-threaded) Emscripten runtime libraries (`-lc-mt`, `-lc++-mt-noexcept`,
-    etc.) — i.e., something in the link inputs (most likely the vcpkg-built
-    SDL2/openal-soft/etc., though not yet confirmed which) expects
-    Emscripten's threaded runtime, while this project's own sources compile
-    without `-pthread`. Symptom: many core SDL symbols
-    (`SDL_RWseek`/`SDL_RWtell`/`SDL_RWread`/`SDL_RWwrite`/`SDL_RWclose`/
-    `SDL_EventState`/`SDL_free`/`SDL_WaitEventTimeout`/`SDL_ShowSimpleMessageBox`)
-    come up as undefined at link time. Not yet root-caused — worth its own
-    focused investigation (check whether the vcpkg community
-    `wasm32-emscripten` triplet or one of the cross-built libraries defaults
-    to pthreads, and either match that in our own build or turn it off
-    consistently everywhere) rather than guessing at a fix blind.
+    pthread/shared-memory ABI mismatch — now fully root-caused, in three
+    layers.**
+    1. **Where `-pthread` actually comes from**: `openal.pc`'s `Libs:` line
+       bakes in `-pthread` (real openal-soft needs it for its mixer thread).
+       That reaches the *linker* via `PKG_CHECK_MODULES`, but nothing adds
+       `-pthread` to *compilation* — so wasm-ld correctly complains that our
+       own object files (`shell.o` etc.) weren't compiled with atomics/
+       bulk-memory support while the link wants `--shared-memory`. Fix:
+       pass `-pthread` in `CFLAGS`/`CXXFLAGS` too, not just accept it at
+       link time (compile and link must agree).
+    2. **A second, unrelated bug this uncovered**: with `LDFLAGS=
+       "-L/opt/homebrew/lib"` still set (left over from the Boost/asio
+       *header*-only native build, from before M3a — never actually needed
+       at link time), `wasm-ld` found the **native macOS**
+       `/opt/homebrew/lib/libSDL2.a` before the correct vcpkg wasm32
+       archive, silently discarded all its (incompatible-format) members,
+       and left every SDL2 symbol undefined
+       (`SDL_RWseek`/`SDL_RWread`/`SDL_EventState`/etc.). Dropping that
+       stray `-L` from `LDFLAGS` fixed it completely — a good reminder to
+       keep native-only flags scoped to what they're actually needed for.
+    3. **The real remaining wall, after both of the above were fixed**:
+       `wasm-ld: --shared-memory is disallowed by SDL_spinlock.c.o because
+       it was not compiled with 'atomics' or 'bulk-memory' features` — this
+       time from Emscripten's *own* bundled system libraries, not our code
+       or vcpkg's. `libal` (Emscripten's built-in OpenAL JS-bridge, unused
+       by us but linked in by default via the `AUTO_NATIVE_LIBRARIES`
+       setting) and `libhtml5` (SDL2's real Emscripten backend genuinely
+       needs this one, for `emscripten_set_keydown_callback_on_thread` and
+       friends) are both declared as a plain `Library` rather than
+       `MTLibrary` in this emsdk's `tools/system_libs.py` — meaning this
+       Emscripten build (6.0.6) never produces a pthread-aware variant of
+       either, and `libhtml5`'s is required, not optional. Confirmed with a
+       full `emcc --clear-cache` + rebuild-from-scratch that this isn't
+       cache staleness: freshly compiled with `-pthread` requested from the
+       start, `libal.a`/`libhtml5.a` still embed a non-atomics
+       `SDL_spinlock.c.o`. This looks like a genuine upstream limitation
+       (possibly a bug) in this specific emsdk version, not something fixable
+       via our own flags — `-sAUTO_NATIVE_LIBRARIES=0` removes `libal`, but
+       `libhtml5` (which we can't drop) hits the identical wall on its own.
+    **Undecided next step** — two real options: (a) try pinning a different
+    (older/stable, not tip-of-tree) emsdk version and see if this library/
+    pthread combination is better supported there; or (b) sidestep for this
+    milestone by using Emscripten's own built-in non-threaded OpenAL port
+    (`-sUSE_OPENAL=1`) instead of real openal-soft, deferring the
+    `ALC_SOFT_loopback`/EFX-capable real audio backend to M5 (Audio, which
+    was already its own separate milestone) — M3b's actual goal is just
+    proving the full toolchain reaches a real link, not shipping audio.
   - A native (non-Emscripten) `./configure` sanity check hit an unrelated,
     pre-existing environment issue on this machine (Apple clang 17 fails
     this project's C++17-support autoconf check) — confirmed unrelated to
@@ -334,9 +365,12 @@ here is implicit, not explicit permission to redistribute.
       browsers can't do real networking at all, so there's nothing to
       preserve by fighting asio's platform detection. `emmake make` now gets
       all the way to the final `alephone.wasm` link step.
-- [ ] **M3b-iii — pthread/shared-memory ABI mismatch at the final link step**
-      (see Findings) — new next wall, found only once M3b-ii got far enough
-      to actually attempt the real link. Not yet root-caused.
+- [ ] **M3b-iii — pthread/shared-memory ABI mismatch at the final link step.**
+      Root-caused (see Findings): a real Emscripten 6.0.6 toolchain
+      limitation, not fixable via our own flags. Needs a strategy decision
+      (try a different emsdk version, or defer real threaded openal-soft to
+      M5 and use Emscripten's built-in non-threaded OpenAL port for now) —
+      not decided yet.
 - [ ] **M3b-iv — OpenGL detection** (`Not found: OpenGL rendering` —
       configure didn't error, just silently disabled it), and then the real
       compile errors from the legacy-GL renderer (see Findings).
@@ -363,8 +397,17 @@ here is implicit, not explicit permission to redistribute.
 M1 (upload widget), M2 (toolchain), M3a (`emconfigure` completes
 successfully), M3b-i (`portable_filesystem.h` gaps fixed), and M3b-ii
 (networking compiled out via `DISABLE_NETWORKING`) are done. `emmake make`
-now reaches the actual final link step for `alephone.wasm` — real progress,
-not just per-file compilation. Next up: M3b-iii, a pthread/shared-memory ABI
-mismatch at that link step (see Findings) — not yet root-caused, worth its
-own focused pass. GL rendering (M3b-iv) comes after that, and is its own
-separately-scoped effort (see the rendering note above).
+reaches the actual final link step for `alephone.wasm` — real progress, not
+just per-file compilation. M3b-iii (pthread/shared-memory ABI mismatch) is
+now fully root-caused (three separate layers — see Findings) down to a
+genuine Emscripten 6.0.6 toolchain limitation (no pthread-aware `libal`/
+`libhtml5` variant), not something fixable via our own flags. Two fixed
+bugs from this investigation (compiling with `-pthread`, dropping a stray
+native `-L/opt/homebrew/lib` that was shadowing the correct wasm32 SDL2
+archive) aren't committed yet — they were verified via manual one-off
+relinks, not yet folded into a permanent `configure.ac` default, since
+they're entangled with an undecided strategy call: pin a different emsdk
+version, or use Emscripten's non-threaded built-in OpenAL port for now and
+defer real threaded openal-soft to M5. GL rendering (M3b-iv) comes after
+that, and is its own separately-scoped effort (see the rendering note
+above).
