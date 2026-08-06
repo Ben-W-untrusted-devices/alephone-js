@@ -194,8 +194,15 @@ here is implicit, not explicit permission to redistribute.
       error, just silently disabled it), and then the real compile errors
       from the legacy-GL renderer (see Findings).
   - [ ] Confirm input (keyboard/mouse/gamepad) via SDL2's Emscripten backend
-  - [ ] Confirm rendering (RenderMain/RenderOther GL calls) — needs real
-        adaptation work, not just a recompile (see Findings)
+  - [ ] Rendering: **deferred as its own separately-scoped effort, not part
+        of M3b.** GL rewrite (legacy compatibility-profile → GLES2/3-shaped,
+        see Findings) is a big enough chunk of work to plan on its own once
+        we're past compiling the rest of the engine. User has their own
+        ideas for the rendering approach here (possibly significant changes,
+        not a like-for-like port) — hardware-accelerated GL is explicitly
+        *not* required for a first working build; a software renderer or
+        other simplified path for the initial pass is fine. Don't assume
+        WebGL is the target until that's actually decided.
 - [ ] **M4 — Filesystem bridge**
   - [ ] Feed files collected by the M1 widget into MEMFS at the paths
         `find_files_sdl.cpp`/`FileHandler` expect
