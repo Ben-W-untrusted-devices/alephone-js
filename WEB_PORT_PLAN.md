@@ -322,14 +322,68 @@ here is implicit, not explicit permission to redistribute.
        (possibly a bug) in this specific emsdk version, not something fixable
        via our own flags — `-sAUTO_NATIVE_LIBRARIES=0` removes `libal`, but
        `libhtml5` (which we can't drop) hits the identical wall on its own.
-    **Undecided next step** — two real options: (a) try pinning a different
-    (older/stable, not tip-of-tree) emsdk version and see if this library/
-    pthread combination is better supported there; or (b) sidestep for this
-    milestone by using Emscripten's own built-in non-threaded OpenAL port
-    (`-sUSE_OPENAL=1`) instead of real openal-soft, deferring the
-    `ALC_SOFT_loopback`/EFX-capable real audio backend to M5 (Audio, which
-    was already its own separate milestone) — M3b's actual goal is just
-    proving the full toolchain reaches a real link, not shipping audio.
+    **Resolved: `-pthread` benefits nothing in this codebase — it's purely
+    an openal-soft implementation detail, not a functional need.** Before
+    picking a workaround, checked whether the engine actually needs real
+    threading: it doesn't. Once `Network/` is disabled, single-player
+    reaches essentially zero real `SDL_CreateThread`/`pthread_*` calls (the
+    one exception, `Misc/Statistics.cpp`'s HTTP telemetry-upload thread,
+    isn't guarded by `DISABLE_NETWORKING` even though it's arguably
+    network-adjacent — noted for later, not yet fixed). More importantly,
+    **audio is already architected the web-friendly way**:
+    `OpenALManager::OpenDevice()` calls `alcLoopbackOpenDeviceSOFT`, not a
+    real device — audio is *pulled* via `alcRenderSamplesSOFT` from the SDL
+    audio callback, exactly the model Web Audio wants (browser calls your
+    callback to fill a buffer), not pushed by an internal mixer thread.
+    openal-soft's `-pthread` requirement turned out to be unconditional
+    regardless of any of this, though: its own `CMakeLists.txt` hard-fails
+    ("PThreads is required for non-Windows builds!") because it uses POSIX
+    semaphores for its internal command queue, independent of backend or
+    rendering mode — so no build-option existed to avoid it while still
+    linking real `libopenal.a`. (Aside: the vcpkg build for this platform
+    only has the offline "Wave" file-writing backend enabled anyway — no
+    real-time device backend exists yet regardless, so real audio output
+    was always going to require the loopback+Web-Audio integration work as
+    its own M5 task.)
+    **Fix applied**: for the Emscripten target, `configure.ac` now keeps
+    vcpkg's real `AL/alext.h` headers (needed for the
+    `LPALCLOOPBACKOPENDEVICESOFT` typedef the code uses) but stops linking
+    `libopenal.a` entirely — the code only ever loads SOFT-extension
+    functions dynamically via `alcGetProcAddress`, never direct linkage, so
+    Emscripten's own bundled AL/ALC stub (auto-linked by default,
+    `AUTO_NATIVE_LIBRARIES`) satisfies linking instead. Extension lookups
+    will return NULL (no audio) until real threaded openal-soft is
+    revisited in M5, deliberately, alongside the loopback+WebAudio glue
+    code and whatever SharedArrayBuffer/cross-origin-isolation deployment
+    headers that ends up needing.
+  - **The working `emconfigure` recipe, end to end** (from a clean
+    `build-wasm/` dir, after `source ../../emsdk/emsdk_env.sh` and
+    `sh ../vcpkg/install-wasm32-emscripten.sh`):
+    ```
+    emconfigure ../configure --with-boost=/opt/homebrew \
+      --without-zzip --without-vpx --without-matroska --without-ebml \
+      --without-vorbis --without-vorbisenc --without-nfd --without-catch2 \
+      --without-curl --without-png \
+      CPPFLAGS="-I/opt/homebrew/include" \
+      PKG_CONFIG_PATH="<repo>/vcpkg/installed-wasm32-emscripten/wasm32-emscripten/lib/pkgconfig"
+    emmake make
+    ```
+    Notably **no `-pthread` and no `-L/opt/homebrew/lib`** — both were
+    needed transiently while debugging (see above) but neither belongs in
+    the real recipe. `-I/opt/homebrew/include` is still needed (Boost/asio
+    headers only, native `brew install boost asio`, never linked). Produces
+    `build-wasm/Source_Files/alephone.wasm` — confirmed a real WebAssembly
+    binary via `file`. No rendering yet (`Not found: OpenGL rendering`);
+    that's M3b-iv, next.
+  - **`network_dummy.cpp` was missing ~15 stub definitions** for
+    declarations `network.h`/`network_games.h` had grown since this file
+    was last touched — unsurprising, since (per the earlier finding)
+    `DISABLE_NETWORKING` had never actually been wired to `config.h`
+    before this session, so this dummy path had likely never actually been
+    linked by anyone. Added matching stubs (`NetGetStats`,
+    `NetUpdateUnconfirmedActionFlags`, `get_player_net_ranking`,
+    `hub_get_minimum_send_period`, etc.) following the existing file's
+    plain no-op/empty-default style.
   - A native (non-Emscripten) `./configure` sanity check hit an unrelated,
     pre-existing environment issue on this machine (Apple clang 17 fails
     this project's C++17-support autoconf check) — confirmed unrelated to
@@ -365,15 +419,24 @@ here is implicit, not explicit permission to redistribute.
       browsers can't do real networking at all, so there's nothing to
       preserve by fighting asio's platform detection. `emmake make` now gets
       all the way to the final `alephone.wasm` link step.
-- [ ] **M3b-iii — pthread/shared-memory ABI mismatch at the final link step.**
-      Root-caused (see Findings): a real Emscripten 6.0.6 toolchain
-      limitation, not fixable via our own flags. Needs a strategy decision
-      (try a different emsdk version, or defer real threaded openal-soft to
-      M5 and use Emscripten's built-in non-threaded OpenAL port for now) —
-      not decided yet.
-- [ ] **M3b-iv — OpenGL detection** (`Not found: OpenGL rendering` —
-      configure didn't error, just silently disabled it), and then the real
-      compile errors from the legacy-GL renderer (see Findings).
+- [x] **M3b-iii — pthread/shared-memory ABI mismatch, resolved.** Root-caused
+      to real openal-soft's unconditional pthread requirement (see
+      Findings) — decided to keep vcpkg's real AL headers (for the
+      `LPALCLOOPBACKOPENDEVICESOFT` typedef) but stop linking real
+      `libopenal.a`, relying on Emscripten's own bundled AL/ALC stub
+      instead. No more `-pthread` anywhere in the build.
+- [x] **M3b-v — Finish `network_dummy.cpp`.** Added the ~15 stub
+      definitions `network.h`/`network_games.h` had grown since this dummy
+      file was last touched (never actually linked before — see Findings).
+- [x] **M3b — `emmake make` produces a real `alephone.wasm`.** 🎉 First
+      successful end-to-end build: `emconfigure`/`emmake` through the whole
+      tree, zero errors, real WebAssembly binary
+      (`build-wasm/Source_Files/alephone.wasm`, confirmed via `file`). See
+      Findings for the exact working `emconfigure` recipe.
+- [ ] **M3b-iv — OpenGL.** Next up. `Not found: OpenGL rendering` —
+      configure didn't error, just silently disabled it, so the build above
+      has no rendering at all yet. Then the real compile errors from the
+      legacy-GL renderer (see Findings).
   - [ ] Confirm input (keyboard/mouse/gamepad) via SDL2's Emscripten backend
   - [ ] Rendering: **deferred as its own separately-scoped effort, not part
         of M3b.** GL rewrite (legacy compatibility-profile → GLES2/3-shaped,
@@ -394,20 +457,18 @@ here is implicit, not explicit permission to redistribute.
 
 ## Status
 
-M1 (upload widget), M2 (toolchain), M3a (`emconfigure` completes
-successfully), M3b-i (`portable_filesystem.h` gaps fixed), and M3b-ii
-(networking compiled out via `DISABLE_NETWORKING`) are done. `emmake make`
-reaches the actual final link step for `alephone.wasm` — real progress, not
-just per-file compilation. M3b-iii (pthread/shared-memory ABI mismatch) is
-now fully root-caused (three separate layers — see Findings) down to a
-genuine Emscripten 6.0.6 toolchain limitation (no pthread-aware `libal`/
-`libhtml5` variant), not something fixable via our own flags. Two fixed
-bugs from this investigation (compiling with `-pthread`, dropping a stray
-native `-L/opt/homebrew/lib` that was shadowing the correct wasm32 SDL2
-archive) aren't committed yet — they were verified via manual one-off
-relinks, not yet folded into a permanent `configure.ac` default, since
-they're entangled with an undecided strategy call: pin a different emsdk
-version, or use Emscripten's non-threaded built-in OpenAL port for now and
-defer real threaded openal-soft to M5. GL rendering (M3b-iv) comes after
-that, and is its own separately-scoped effort (see the rendering note
-above).
+**M1 through M3b are done. `emmake make` produces a real, working
+`alephone.wasm`** — the first successful end-to-end build of this port,
+zero errors. That covers: the upload widget (M1), the toolchain (M2),
+`emconfigure` completing (M3a), the `portable_filesystem.h` gaps (M3b-i),
+networking compiled out via `DISABLE_NETWORKING` (M3b-ii), the
+pthread/shared-memory ABI mismatch (M3b-iii, root-caused to openal-soft's
+unconditional internal requirement and resolved by not linking real
+`libopenal.a` — see Findings), and finishing `network_dummy.cpp`'s missing
+stubs (M3b-v). The exact working `emconfigure` recipe is in Findings.
+
+Next up: **M3b-iv, OpenGL** — the build above has no rendering at all yet
+(`Not found: OpenGL rendering`). That's its own separately-scoped effort
+(see the rendering note above) — the user has their own ideas for the
+rendering approach, and hardware-accelerated GL is explicitly not required
+for a first working build.

@@ -216,7 +216,26 @@ AX_REQUIRE_PKG([zlib], [ZLIB], [zlib])
 
 AX_REQUIRE_PKG([sndfile], [SNDFILE], [sndfile])
 
-AX_REQUIRE_PKG([openal], [OPENAL], [openal >= 1.14.0])
+dnl Web port (see WEB_PORT_PLAN.md, M3b-iii): real openal-soft unconditionally
+dnl requires pthread (used internally for semaphores, even in the
+dnl loopback-only rendering mode this codebase already uses via
+dnl alcLoopbackOpenDeviceSOFT) -- not fixable via flags, and this
+dnl Emscripten build's own pthread-enabled system libraries have gaps of
+dnl their own (no atomics-aware libal/libhtml5 variant). The code only ever
+dnl loads SOFT-extension functions dynamically via alcGetProcAddress, never
+dnl direct linkage, so for Emscripten we keep vcpkg's real AL/alext.h
+dnl headers (for the LPALCLOOPBACKOPENDEVICESOFT typedef etc.) but don't
+dnl actually link libopenal.a or pull in -pthread; Emscripten's own bundled
+dnl OpenAL stub satisfies AL/ALC linkage instead (extension lookups will
+dnl return NULL until real threaded audio is tackled in M5).
+AS_IF([test "x$ax_target_emscripten" = "xyes"],
+      [ PKG_CHECK_MODULES([OPENAL], [openal >= 1.14.0],
+                          [ CPPFLAGS="${OPENAL_CFLAGS} $CPPFLAGS"
+                            have_openal=true
+                            AC_DEFINE([HAVE_OPENAL], [1], [OpenAL support enabled]) ],
+                          [AC_MSG_ERROR([You need openal to run Aleph One.])])
+      ],
+      [ AX_REQUIRE_PKG([openal], [OPENAL], [openal >= 1.14.0]) ])
 
 dnl Check for OpenGL.
 AS_IF([test "x$enable_opengl" != "xno"],

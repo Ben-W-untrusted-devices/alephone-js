@@ -110,3 +110,91 @@ bool NetAllowTunnelVision(void)
 {
 	return false;
 }
+
+// Web port (see ../../WEB_PORT_PLAN.md, M3b-v): network.h/network_games.h
+// grew a lot of declarations since this dummy file was last touched, and
+// DISABLE_NETWORKING had never actually been wired up to config.h before
+// (see WEB_PORT_PLAN.md) -- so none of this had ever actually been linked.
+// These follow the existing style above: harmless no-op/empty defaults.
+
+int32 team_netgame_parameters[NUMBER_OF_TEAM_COLORS][2] = {};
+
+long get_player_net_ranking(short player_index, short *kills, short *deaths, bool game_is_over)
+{
+	if (kills) *kills = 0;
+	if (deaths) *deaths = 0;
+	return 0;
+}
+
+void calculate_player_rankings(struct player_ranking_data *rankings)
+{
+}
+
+void calculate_ranking_text(char *buffer, long ranking)
+{
+	if (buffer) buffer[0] = '\0';
+}
+
+short get_network_compass_state(short player_index)
+{
+	return _network_compass_all_off;
+}
+
+std::string NetSessionIdentifier(void)
+{
+	return std::string();
+}
+
+void match_starts_with_existing_players(struct player_start_data* ioStartArray, short* ioStartCount)
+{
+}
+
+bool NetAllowOverlayMap()
+{
+	return false;
+}
+
+bool NetAllowSavingLevel()
+{
+	return true;
+}
+
+int32 NetGetUnconfirmedActionFlagsCount()
+{
+	return 0;
+}
+
+uint32 NetGetUnconfirmedActionFlag(int32 offset)
+{
+	return 0;
+}
+
+void NetUpdateUnconfirmedActionFlags()
+{
+}
+
+int32 NetGetLatency()
+{
+	return NetworkStats::invalid;
+}
+
+const NetworkStats& NetGetStats(int player_index)
+{
+	static const NetworkStats sInvalidStats = { NetworkStats::invalid, NetworkStats::invalid, NetworkStats::invalid, 0 };
+	return sInvalidStats;
+}
+
+bool NetCheckWorldUpdate()
+{
+	return true;
+}
+
+int32& hub_get_minimum_send_period()
+{
+	static int32 minimum_send_period = 0;
+	return minimum_send_period;
+}
+
+void hub_set_minimum_send_period(int32 new_minimum)
+{
+}
