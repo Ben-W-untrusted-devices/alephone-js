@@ -6,6 +6,23 @@ Aleph One is available under the terms of the [GNU General Public License (GPL 3
 
 [![Discord](https://img.shields.io/badge/Discord-%235865F2.svg?&logo=discord&logoColor=white)](https://discord.gg/NvF3pdV)     [![Steam](https://img.shields.io/badge/steam-%23000000.svg?style=for-the-badge&logo=steam&logoColor=white)](https://store.steampowered.com/developer/alephone)
 
+# Web port (this fork)
+
+This fork is an experimental, in-progress port of Aleph One to run in a web browser via WebAssembly. Most of the web-porting work is being done by an AI coding agent (Claude), directed and reviewed by a human. The copyright status of AI-generated code is currently unsettled, so if you're looking to fork Aleph One, use the [upstream repository](https://github.com/Aleph-One-Marathon/alephone) instead of this one.
+
+Progress and design decisions are tracked in [WEB_PORT_PLAN.md](WEB_PORT_PLAN.md). Current feature status:
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| Builds to WebAssembly (`emmake make`) | Working | first successful build produces a real `alephone.wasm`; nothing runs in a browser tab yet |
+| Game data loading (drag-and-drop upload) | Working | browsers have no filesystem to scan, so this replaces the native file dialogs |
+| Sound | TBD | the engine's existing OpenAL loopback design already matches how Web Audio wants to be driven, but isn't wired up yet |
+| Hardware-accelerated rendering (OpenGL/WebGL) | TBD | the existing renderer uses legacy fixed-function GL, which needs rewriting for WebGL |
+| Software rendering | TBD | not started; being considered as an alternative to a WebGL rewrite |
+| Keyboard / mouse / gamepad input | TBD | SDL2 has a real Emscripten backend for this, but it isn't verified end to end yet |
+| Save games and preferences | TBD | not started |
+| Networked multiplayer | Impossible | browsers have no raw TCP/UDP socket API at all, and no existing Aleph One client, server, or metaserver speaks WebSocket/WebRTC |
+
 # Download
 
 To download ready-to-run versions of all three _Marathon_ games for macOS,
