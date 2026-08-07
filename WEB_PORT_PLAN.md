@@ -373,8 +373,32 @@ here is implicit, not explicit permission to redistribute.
     the real recipe. `-I/opt/homebrew/include` is still needed (Boost/asio
     headers only, native `brew install boost asio`, never linked). Produces
     `build-wasm/Source_Files/alephone.wasm` — confirmed a real WebAssembly
-    binary via `file`. No rendering yet (`Not found: OpenGL rendering`);
-    that's M3b-iv, next.
+    binary via `file`. No rendering yet (`Not found: OpenGL rendering`).
+  - **Verified it actually runs, not just links (M3c).** The default
+    `emmake` target links to a bare `alephone`/`alephone.wasm` with no
+    `.html`/`.js` glue (Emscripten defaults to a Node-runnable script
+    without an explicit `-o foo.html`). Quick free check: `node alephone
+    --help` printed the real, correctly-formatted CLI usage banner — proves
+    `main()`, argument parsing, and basic I/O work. Running it for real
+    (`node alephone --nogl --nosound --nojoystick`, no args) got exactly as
+    far as expected: crashed in `SDL_Init` → `Emscripten_VideoInit` →
+    `emscripten_get_screen_size` with `ReferenceError: screen is not
+    defined` — a genuine browser-only DOM API (`window.screen`), i.e. Node
+    itself was the limitation, not the port. Relinking the same object
+    files with `-o alephone.html` (a one-off manual relink for this test,
+    not yet how the Makefile builds it) and loading that in a real browser
+    tab got much further: **no crash**, a real black canvas rendered (SDL2
+    actually created a browser window/canvas — genuine visual proof, even
+    with zero rendering code enabled), console output streamed live to the
+    page, and the game reached its own error handling: *"Please be sure
+    the files 'Map', 'Shapes', 'Images' and 'Sounds' are correctly
+    installed and try again."* That's the engine correctly reporting no
+    scenario data is available — expected, since the M1 upload widget
+    isn't wired into MEMFS yet (M4). **This is the real evidence for
+    reprioritizing M4 ahead of M3b-iv/OpenGL**: the engine reaches its data-
+    loading step, and therefore blocks on missing data, before it would
+    ever reach a rendering code path — so the filesystem bridge is the
+    actual next thing standing in the way, not GL.
   - **`network_dummy.cpp` was missing ~15 stub definitions** for
     declarations `network.h`/`network_games.h` had grown since this file
     was last touched — unsurprising, since (per the earlier finding)
@@ -433,10 +457,16 @@ here is implicit, not explicit permission to redistribute.
       tree, zero errors, real WebAssembly binary
       (`build-wasm/Source_Files/alephone.wasm`, confirmed via `file`). See
       Findings for the exact working `emconfigure` recipe.
-- [ ] **M3b-iv — OpenGL.** Next up. `Not found: OpenGL rendering` —
-      configure didn't error, just silently disabled it, so the build above
-      has no rendering at all yet. Then the real compile errors from the
-      legacy-GL renderer (see Findings).
+- [x] **M3c — Verified `alephone.wasm` actually runs**, in both Node (quick
+      free sanity check) and a real browser tab (the actual target). See
+      Findings — this is real, not just "it links."
+- [ ] **M3b-iv — OpenGL.** `Not found: OpenGL rendering` — configure didn't
+      error, just silently disabled it, so the current build has no
+      rendering at all yet. Then the real compile errors from the legacy-GL
+      renderer (see Findings). **Not the actual next blocker** — M3c showed
+      the engine reaches its own "can't find game data" error before it
+      would ever reach rendering, so **M4 (filesystem bridge) is next**,
+      not this.
   - [ ] Confirm input (keyboard/mouse/gamepad) via SDL2's Emscripten backend
   - [ ] Rendering: **deferred as its own separately-scoped effort, not part
         of M3b.** GL rewrite (legacy compatibility-profile → GLES2/3-shaped,
@@ -467,8 +497,20 @@ unconditional internal requirement and resolved by not linking real
 `libopenal.a` — see Findings), and finishing `network_dummy.cpp`'s missing
 stubs (M3b-v). The exact working `emconfigure` recipe is in Findings.
 
-Next up: **M3b-iv, OpenGL** — the build above has no rendering at all yet
-(`Not found: OpenGL rendering`). That's its own separately-scoped effort
-(see the rendering note above) — the user has their own ideas for the
-rendering approach, and hardware-accelerated GL is explicitly not required
-for a first working build.
+**M3c is also done: verified `alephone.wasm` actually runs**, not just
+links — in a real browser tab it reaches `main()`, initializes SDL2 (a
+real canvas renders), and gets to the game's own "can't find Map/Shapes/
+Images/Sounds" error, since no game data has been fed in yet (see
+Findings for the full run, including a Node-only run that usefully failed
+earlier at a genuine browser-only API, `window.screen`, confirming Node
+was the limiting factor there, not the port).
+
+That result reprioritizes what's next: **M4 (filesystem bridge) is next,
+not M3b-iv/OpenGL.** The engine reaches its data-loading step — and
+therefore blocks on missing data — before it would ever reach a rendering
+code path, so wiring the M1 upload widget into MEMFS is the actual next
+thing standing in the way of seeing more of the engine run, not GL. OpenGL
+remains its own separately-scoped effort for whenever rendering is
+tackled (see the rendering note above) — the user has their own ideas for
+that approach, and hardware-accelerated GL is explicitly not required for
+a first working build.
