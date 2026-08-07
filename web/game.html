@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Aleph One web port -- engine harness</title>
+  <style>
+    body { font: 14px system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; }
+    .alephone-upload-widget {
+      border: 2px dashed #888;
+      border-radius: 8px;
+      padding: 2rem;
+      text-align: center;
+      cursor: pointer;
+    }
+    .alephone-upload-widget--dragover {
+      border-color: #2a7;
+      background: #eafaf0;
+    }
+    .alephone-upload-widget__status {
+      color: #555;
+      font-size: 0.9em;
+    }
+    button { font-size: 1em; padding: 0.5em 1em; margin-top: 1rem; }
+    #canvas { display: block; background: #000; margin-top: 1rem; width: 640px; height: 480px; }
+    #log { font-size: 0.8em; color: #333; white-space: pre-wrap; background: #f4f4f4; padding: 0.5em; max-height: 12rem; overflow-y: auto; }
+  </style>
+</head>
+<body>
+  <h1>Engine harness</h1>
+  <p>Manual test harness only -- not part of the built game UI. Upload a
+  Marathon scenario folder (e.g. the one used for local testing, see
+  ../CLAUDE.md), then start the engine. Requires
+  <code>web/build-engine.sh</code> to have been run first (see
+  WEB_PORT_PLAN.md, M4).</p>
+
+  <div id="widget-root"></div>
+  <button id="start-button" disabled>Start engine</button>
+  <canvas id="canvas"></canvas>
+  <pre id="log"></pre>
+
+  <script type="module">
+    import { UploadWidget } from "./src/upload/UploadWidget";
+    import { mountUploadedFiles } from "./src/fs/mountUploadedFiles";
+
+    const logEl = document.getElementById("log");
+    function log(...args) {
+      logEl.textContent += args.join(" ") + "\n";
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    let currentFiles = [];
+    const startButton = document.getElementById("start-button");
+
+    const widget = new UploadWidget({
+      onFilesReady: (files) => {
+        currentFiles = files;
+        startButton.disabled = files.length === 0;
+      },
+    });
+    document.getElementById("widget-root").appendChild(widget.element);
+
+    startButton.addEventListener("click", async () => {
+      startButton.disabled = true;
+      startButton.textContent = "Loading engine...";
+      try {
+        const { default: createAlephOneModule } = await import("/engine/alephone.js");
+
+        const Module = await createAlephOneModule({
+          canvas: document.getElementById("canvas"),
+          print: (text) => log(text),
+          printErr: (text) => log("[stderr]", text),
+        });
+
+        log(`Mounting ${currentFiles.length} file(s) into /data ...`);
+        const result = await mountUploadedFiles(Module.FS, currentFiles, "/data");
+        log(`Mounted ${result.mountedCount} file(s) (${result.skippedCount} skipped).`);
+
+        log("Starting main()...");
+        Module.callMain(["/data"]);
+      } catch (err) {
+        log("Failed to start:", err instanceof Error ? err.message : String(err));
+        console.error(err);
+      } finally {
+        startButton.textContent = "Start engine";
+      }
+    });
+  </script>
+</body>
+</html>

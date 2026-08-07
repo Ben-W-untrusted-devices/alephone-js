@@ -414,6 +414,148 @@ here is implicit, not explicit permission to redistribute.
     this session's changes, since it fails at an earlier, independent check
     before the code touched here even runs. Not investigated further; not
     a regression.
+  - **M4: the filesystem bridge from the M1 upload widget to MEMFS.** Added
+    [web/src/fs/EmscriptenFS.ts](web/src/fs/EmscriptenFS.ts) (a minimal
+    `mkdirTree`/`writeFile` interface, kept separate from the real, much
+    larger Emscripten `FS` type so this stays unit-testable against a plain
+    fake) and
+    [web/src/fs/mountUploadedFiles.ts](web/src/fs/mountUploadedFiles.ts)
+    (writes every `UploadableFile`'s bytes into that FS under a mount root,
+    recreating the dropped folder's directory structure). Reads file bytes
+    via `FileReader` rather than the newer `Blob.arrayBuffer()` — the latter
+    isn't implemented by jsdom (this project's unit test environment) as of
+    the version in use here, even though real browsers support it.
+  - **A newly-discovered bug blocked `emmake make` from being reused
+    reliably: automake was using the native macOS `ar`/`ranlib`, not
+    Emscripten's `emar`/`emranlib`.** `configure.ac`/`Makefile.am` never
+    override `AR`/`RANLIB`, and `emconfigure` doesn't set them either (only
+    `CC`/`CXX`). This went unnoticed through M3b/M3c because those archives
+    were only ever *created* once; the bug only surfaces when an archive is
+    *rewritten* (e.g. after touching one source file and rebuilding) — the
+    native tools don't understand WASM object files, and silently produced
+    a corrupt `.a` (`ranlib: ... the table of contents is empty` was the
+    tell). Symptom at final link time: `wasm-ld: LLVM ERROR: malformed
+    uleb128, extends past end`. Fix: always build with `AR=emar
+    RANLIB=emranlib` (now baked into `web/build-engine.sh`) — a real
+    root-caused fix, not a workaround. Worth adding to the `emconfigure`
+    recipe above for anyone reproducing this build from scratch, though the
+    configure-time recipe itself doesn't need to change (only the `make`
+    invocation).
+  - **Formalized the M3c one-off manual relink into
+    [web/build-engine.sh](web/build-engine.sh).** Automake's link rule (see
+    `Source_Files/Makefile`'s `CXXLINK`) places `-o alephone` right after
+    the compiler flags, followed by the entire object/library list — not at
+    the end of the line — so there's no `LDFLAGS` override that redirects
+    output to `.html`/`.js`: anything passed in `LDFLAGS` lands *before*
+    automake's own `-o alephone`, which then wins. The script instead
+    captures the real link command (the correct object/library list,
+    computed by automake) via a forced dry run (`make -n -B V=1 alephone`,
+    grepping for the line containing literal ` -o alephone `, since that
+    substring is unique to the link step — compile steps only ever produce
+    `-o foo.o`), then re-runs it with extra flags appended, including a
+    fresh `-o` — since emcc (like clang) honors the *last* `-o` flag, that's
+    enough to redirect the output without editing the original command.
+    Added flags: `-sMODULARIZE=1 -sEXPORT_ES6=1
+    -sEXPORT_NAME=createAlephOneModule` (an importable ES module default-
+    exporting an async factory function, rather than a global), `-
+    sEXPORTED_RUNTIME_METHODS=FS,callMain` (both needed by the JS-side
+    bridge), `-sFORCE_FILESYSTEM=1` (keeps FS fully linked in even though
+    nothing calls it before `main()`), `-sINVOKE_RUN=0` (so `main()` isn't
+    auto-invoked — the bridge mounts files into FS first, then calls
+    `Module.callMain(["/data"])` itself), `-sENVIRONMENT=web`.
+  - **Output deliberately lives at `web/engine/`, not `web/public/`.** Vite
+    refuses to `import()` (even a dynamic one, even with `/* @vite-ignore
+    */`) any `.js` file that resolves inside its configured `publicDir`
+    (default `public/`) — by design, files there are meant to be referenced
+    only via `<script src>`/`<link href>`, copied as-is on build. Since
+    `alephone.js` needs to be `import()`ed (it's the whole point of
+    `-sEXPORT_ES6=1` + `MODULARIZE`), the build output goes to its own
+    plain static directory instead, which Vite's dev server still serves
+    correctly (any real file under the project root is served, not just
+    `publicDir`'s contents) without the import restriction applying.
+  - **Manually driving the compiled engine from a plain `<script
+    type="module">` (no bundler) is real, verified progress: `main()` now
+    runs against browser-supplied data**, not just a canvas + a "no data"
+    error (M3c). Added [web/game.html](web/game.html), a manual test
+    harness (upload widget + "Start engine" button + canvas), and drove it
+    via the Browser pane tool. Two real, non-obvious things were found this
+    way that no amount of reading the C++ source would have surfaced
+    quickly:
+    1. **The engine looks up its core scenario files by exact,
+       extensionless name** (`"Map"`, `"Shapes"`, `"Images"`, `"Sounds"` —
+       see `Source_Files/Misc/DefaultStringSets.cpp`'s `"Filenames"` string
+       set and `Source_Files/Files/preprocess_map_sdl.cpp`'s
+       `have_default_files()`/`get_default_spec()`, which does a plain
+       `access(GetPath(), R_OK)` against that literal name — no extension
+       matching, no cleverness). The `.sceA`/`.shpA`/`.sndA`/`.imgA`
+       extensions (used by this project's own recognized-extension table,
+       `knownFileTypes.ts`, mirroring `FileHandler.cpp`'s) are for this
+       widget's own "looks like a scenario" recognition and, separately,
+       for file-browser/chooser UI — *not* for how the engine finds its
+       default files. Confirmed empirically: mounting synthetic files named
+       `Map.sceA`/`Shapes.shpA`/etc. still produced the "please be sure the
+       files ... are correctly installed" error; renaming the same files to
+       exactly `Map`/`Shapes`/etc. made that check pass and the engine
+       proceeded into real initialization. **`mountUploadedFiles` now
+       renames the four recognized top-level scenario files to their
+       canonical extensionless names automatically** (a small fixed table,
+       `CANONICAL_TOP_LEVEL_NAMES`) — without this, a normal user dropping
+       a real, normally-named scenario folder would silently hit this
+       error forever, so it's a correctness fix, not polish. Saved games,
+       films, and physics models aren't looked up this way (the physics
+       model isn't even required — `get_default_physics_spec` "doesn't care
+       if it does not exist") and keep their real names.
+    2. **`mountUploadedFiles` also strips a single shared leading folder
+       across all uploaded files** (e.g. `"Marathon 2/Map.sceA"` mounts as
+       `/data/Map`, not `/data/Marathon 2/Map`), only when every file
+       shares the same first path segment. Native Aleph One expects
+       scenario data (`Map`, `Plugins/`, `Scripts/`, ...) directly inside
+       the one directory it's pointed at
+       (`data_search_path`/`shell_options.directory` — see `shell.cpp`);
+       the folder-picker/drag-drop widget naturally includes the dropped
+       folder's own name as the first path segment
+       (`webkitRelativePath`/`FileSystemEntry` walk), which would otherwise
+       nest everything one level too deep — breaking not just the four
+       canonical files but also `Plugins`/`Scripts` discovery (which scans
+       for those subdirectory names directly under each `data_search_path`
+       entry). Both fixes were verified together against the real
+       Emscripten `FS` (not just the unit tests' fake): a synthetic upload
+       shaped like the real Marathon 2 folder layout (`Marathon
+       2/Map.sceA`, `.../Shapes.shpA`, `.../Images.imgA`,
+       `.../Sounds.sndA`, `Marathon 2/Plugins/MyMod/SubMap.sceA`) produced
+       exactly `/data/Map`, `/data/Shapes`, `/data/Images`, `/data/Sounds`,
+       `/data/Plugins/MyMod/SubMap.sceA` — canonical names at the top,
+       original names/nesting preserved underneath. (Verified with
+       synthetic placeholder bytes under names matching the real Marathon 2
+       layout, never with the real copyrighted file contents — no need to
+       touch the actual data to prove the *path* logic is correct, and
+       serving that real data over even a local, ephemeral HTTP port for
+       test purposes was correctly refused by this session's safety
+       tooling, which is the right call per the hard constraint above.)
+  - **New, more significant blocker found only by getting main() to
+    actually run against present data: `main_event_loop()` (`shell.cpp`) is
+    a classic blocking `while` loop, incompatible with a browser tab's
+    single-threaded, cooperative execution model.** Confirmed directly:
+    once `have_default_files()` passes (see above), `Module.callMain(["/
+    data"])` never returns and the entire tab stops compositing/responding
+    (had to be force-closed) — consistent with a synchronous loop that
+    never yields back to the browser's own event loop, which is also why
+    nothing under Emscripten can block-and-wait the way native code can.
+    This is architecturally the same *category* of problem as the deferred
+    GL rendering work (M3b-iv): a real, scoped chunk of adaptation work,
+    not a flag flip. The two standard fixes are `emscripten_set_main_loop`
+    (restructure the loop into a per-frame callback the browser drives —
+    more invasive to existing code, conflicts somewhat with this project's
+    "avoid touching existing C++" convention, though this would be a
+    "genuinely necessary" case) or Asyncify (`-sASYNCIFY=1`, lets the
+    existing blocking-loop shape keep working by transparently
+    yielding/resuming around specific calls — much less invasive to the
+    C++, but has real binary-size/performance cost and needs the
+    async-safe call graph marked up). **Not started or decided this
+    session** — deliberately left as an open, explicitly-flagged decision
+    for the same reason GL rendering was deferred (see M3b-iv note): it's a
+    real architectural choice, not obviously not the user's to make
+    unilaterally, and better to surface clearly than to guess.
 
 ## Milestones / Task list
 
@@ -463,10 +605,8 @@ here is implicit, not explicit permission to redistribute.
 - [ ] **M3b-iv — OpenGL.** `Not found: OpenGL rendering` — configure didn't
       error, just silently disabled it, so the current build has no
       rendering at all yet. Then the real compile errors from the legacy-GL
-      renderer (see Findings). **Not the actual next blocker** — M3c showed
-      the engine reaches its own "can't find game data" error before it
-      would ever reach rendering, so **M4 (filesystem bridge) is next**,
-      not this.
+      renderer (see Findings). **Still not the actual next blocker** — see
+      the main-loop item below M4a for what is.
   - [ ] Confirm input (keyboard/mouse/gamepad) via SDL2's Emscripten backend
   - [ ] Rendering: **deferred as its own separately-scoped effort, not part
         of M3b.** GL rewrite (legacy compatibility-profile → GLES2/3-shaped,
@@ -477,10 +617,23 @@ here is implicit, not explicit permission to redistribute.
         *not* required for a first working build; a software renderer or
         other simplified path for the initial pass is fine. Don't assume
         WebGL is the target until that's actually decided.
-- [ ] **M4 — Filesystem bridge**
-  - [ ] Feed files collected by the M1 widget into MEMFS at the paths
-        `find_files_sdl.cpp`/`FileHandler` expect
-  - [ ] IDBFS persistence so re-upload isn't required every session
+- [x] **M4a — Feed files collected by the M1 widget into MEMFS at the paths
+      `find_files_sdl.cpp`/`FileHandler` expect.** See Findings:
+      `mountUploadedFiles.ts`, the `emar`/`emranlib` build fix,
+      `build-engine.sh` (a real, browser-loadable `alephone.js`/`.wasm`),
+      and `game.html` (a manual harness), plus the two real bugs this
+      surfaced and fixed (canonical extensionless top-level names; leading-
+      folder stripping). Verified end-to-end against the real Emscripten
+      `FS`, not just unit tests.
+  - [ ] **M4b — IDBFS persistence** so re-upload isn't required every
+        session. Not started.
+- [ ] **New, undecided blocker found via M4a: `main_event_loop()`'s
+      blocking `while` loop doesn't work in a browser tab** (see Findings)
+      — needs `emscripten_set_main_loop` or Asyncify, a real architectural
+      choice not yet made. This is now the actual thing standing between
+      "engine boots" and "engine does anything visible run-to-run", ahead
+      of both M4b and M3b-iv/OpenGL — mounted data can't be exercised at
+      all while `main()` can't return control to the browser.
 - [ ] **M5 — Audio**
 - [ ] **M6 — Save games / prefs persistence**
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)
@@ -505,12 +658,31 @@ Findings for the full run, including a Node-only run that usefully failed
 earlier at a genuine browser-only API, `window.screen`, confirming Node
 was the limiting factor there, not the port).
 
-That result reprioritizes what's next: **M4 (filesystem bridge) is next,
-not M3b-iv/OpenGL.** The engine reaches its data-loading step — and
-therefore blocks on missing data — before it would ever reach a rendering
-code path, so wiring the M1 upload widget into MEMFS is the actual next
-thing standing in the way of seeing more of the engine run, not GL. OpenGL
-remains its own separately-scoped effort for whenever rendering is
-tackled (see the rendering note above) — the user has their own ideas for
-that approach, and hardware-accelerated GL is explicitly not required for
-a first working build.
+That result reprioritized what came next: **M4a (filesystem bridge), not
+M3b-iv/OpenGL** — and M4a is now done. The M1 upload widget's files get
+written into the real Emscripten `FS` under `/data`, with two real
+correctness bugs found and fixed along the way (not just "should work" —
+verified against the real `FS`, not only the fake used in unit tests):
+core scenario files (`Map`/`Shapes`/`Images`/`Sounds`) are looked up by
+exact extensionless name, so `mountUploadedFiles` renames the four
+recognized top-level files to match; and a single shared leading folder
+(the dropped folder's own name) is stripped so nested `Plugins`/`Scripts`
+discovery isn't broken. Also formalized what M3c did as a one-off manual
+relink into a real, reusable build step
+([web/build-engine.sh](web/build-engine.sh)), fixing a genuine, previously-
+unnoticed `ar`/`ranlib` bug along the way (see Findings) — and added a
+manual test harness, [web/game.html](web/game.html).
+
+**Driving the real engine this way surfaced the actual next blocker:**
+once scenario data is present and `have_default_files()` passes,
+`Module.callMain()` reaches `main_event_loop()` (`shell.cpp`) — a classic
+blocking `while` loop — which hangs the entire browser tab, since nothing
+in that loop ever yields back to the browser's own (single-threaded,
+cooperative) event loop. This needs either `emscripten_set_main_loop`
+(restructuring the loop into a per-frame callback) or Asyncify
+(`-sASYNCIFY=1`, lower-invasiveness but real binary-size/perf cost) — a
+real architectural decision, deliberately left open this session rather
+than guessed at, the same way GL rendering was (see Findings and the
+M3b-iv note above). M4b (IDBFS persistence) and M3b-iv (OpenGL) both
+remain not-yet-started and lower priority than this new blocker, since
+neither matters until `main()` can actually run past its first frame.

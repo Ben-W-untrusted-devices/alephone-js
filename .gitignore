@@ -54,6 +54,13 @@ web/node_modules/
 web/dist/
 web/coverage/
 
+# Compiled engine output (alephone.js/.wasm), produced locally by
+# web/build-engine.sh -- large binary build output, not source. Deliberately
+# not web/public/: Vite refuses to `import()` .js files that live under its
+# publicDir, and MODULARIZE'd Emscripten output needs to be imported (see
+# WEB_PORT_PLAN.md, M4), so this is its own plain static directory instead.
+/web/engine/
+
 # Out-of-tree Emscripten build directory (emconfigure/emmake), see
 # WEB_PORT_PLAN.md M2/M3.
 /build-wasm/

@@ -14,8 +14,8 @@ Progress and design decisions are tracked in [WEB_PORT_PLAN.md](WEB_PORT_PLAN.md
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| Builds to WebAssembly (`emmake make`) | Working | first successful build produces a real `alephone.wasm`; nothing runs in a browser tab yet |
-| Game data loading (drag-and-drop upload) | Working | browsers have no filesystem to scan, so this replaces the native file dialogs |
+| Builds to WebAssembly (`emmake make`) | Working | produces a real `alephone.wasm`; `main()` runs in a real browser tab and initializes SDL2 |
+| Game data loading (drag-and-drop upload) | Working | browsers have no filesystem to scan, so this replaces the native file dialogs; uploaded files are written into the engine's in-browser filesystem where it expects to find them |
 | Sound | TBD | the engine's existing OpenAL loopback design already matches how Web Audio wants to be driven, but isn't wired up yet |
 | Hardware-accelerated rendering (OpenGL/WebGL) | TBD | the existing renderer uses legacy fixed-function GL, which needs rewriting for WebGL |
 | Software rendering | TBD | not started; being considered as an alternative to a WebGL rewrite |
