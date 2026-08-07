@@ -86,6 +86,13 @@
 #include <unistd.h>
 #endif
 
+// Web port (see ../WEB_PORT_PLAN.md, M4c): main_event_loop() below needs
+// emscripten_set_main_loop() to hand its loop to the browser instead of
+// blocking it -- see the function itself for why.
+#ifdef __EMSCRIPTEN__
+#include <emscripten/emscripten.h>
+#endif
+
 #include "OGL_Headers.h"
 
 #ifdef HAVE_SDL_IMAGE
@@ -709,113 +716,153 @@ short get_level_number_from_user(void)
 }
 
 const uint32 TICKS_BETWEEN_EVENT_POLL = 16; // 60 Hz
-void main_event_loop(void)
+
+// Web port (see ../WEB_PORT_PLAN.md, M4c): one pass of what used to be
+// main_event_loop()'s while-loop body, factored out so it can be driven
+// either by that same native while loop (unchanged behavior on every other
+// platform) or, under Emscripten, by a per-frame callback -- a real native
+// blocking loop never returns control to the browser's own event loop,
+// which hangs the tab the first time this actually runs against loaded
+// game data (confirmed empirically, not assumed). last_event_poll is
+// `static` rather than a loop-local, since main_event_loop() itself is only
+// ever entered once for the life of the program (see main.cpp) -- so this
+// preserves the exact original persistence across iterations either way.
+static void main_event_loop_iteration(short game_state)
 {
-	uint32 last_event_poll = 0;
-	short game_state;
+	uint64_t cur_time = machine_tick_count();
+	bool yield_time = false;
+	bool poll_event = false;
+	static uint32 last_event_poll = 0;
 
-	while ((game_state = get_game_state()) != _quit_game) {
-		uint64_t cur_time = machine_tick_count();
-		bool yield_time = false;
-		bool poll_event = false;
-
-		switch (game_state) {
-			case _game_in_progress:
-			case _change_level:
-				if ((get_fps_target() == 0 && get_keyboard_controller_status()) || Console::instance()->input_active() || cur_time - last_event_poll >= TICKS_BETWEEN_EVENT_POLL) {
-					poll_event = true;
-					last_event_poll = cur_time;
-			  } else {				  
-					SDL_PumpEvents ();	// This ensures a responsive keyboard control
-			  }
-				break;
-
-			case _display_intro_screens:
-			case _display_main_menu:
-			case _display_chapter_heading:
-			case _display_prologue:
-			case _display_epilogue:
-			case _begin_display_of_epilogue:
-			case _display_credits:
-			case _display_intro_screens_for_demo:
-			case _display_quit_screens:
-			case _displaying_network_game_dialogs:
-				yield_time = interface_fade_finished();
+	switch (game_state) {
+		case _game_in_progress:
+		case _change_level:
+			if ((get_fps_target() == 0 && get_keyboard_controller_status()) || Console::instance()->input_active() || cur_time - last_event_poll >= TICKS_BETWEEN_EVENT_POLL) {
 				poll_event = true;
-				break;
+				last_event_poll = cur_time;
+		  } else {
+				SDL_PumpEvents ();	// This ensures a responsive keyboard control
+		  }
+			break;
 
-			case _close_game:
-			case _switch_demo:
-			case _revert_game:
-				yield_time = poll_event = true;
-				break;
-		}
+		case _display_intro_screens:
+		case _display_main_menu:
+		case _display_chapter_heading:
+		case _display_prologue:
+		case _display_epilogue:
+		case _begin_display_of_epilogue:
+		case _display_credits:
+		case _display_intro_screens_for_demo:
+		case _display_quit_screens:
+		case _displaying_network_game_dialogs:
+			yield_time = interface_fade_finished();
+			poll_event = true;
+			break;
 
-		if (poll_event) {
-			global_idle_proc();
+		case _close_game:
+		case _switch_demo:
+		case _revert_game:
+			yield_time = poll_event = true;
+			break;
+	}
 
-			SDL_Event event;
-			if (yield_time)
-			{
-				// The game is not in a "hot" state, yield time to other
-				// processes but only try for a maximum of 30ms
-				if (SDL_WaitEventTimeout(&event, 30))
-				{
-					process_event(event);
-				}
-			}
+	if (poll_event) {
+		global_idle_proc();
 
-			while (SDL_PollEvent(&event))
+		SDL_Event event;
+		if (yield_time)
+		{
+			// The game is not in a "hot" state, yield time to other
+			// processes but only try for a maximum of 30ms
+			if (SDL_WaitEventTimeout(&event, 30))
 			{
 				process_event(event);
 			}
+		}
+
+		while (SDL_PollEvent(&event))
+		{
+			process_event(event);
+		}
 
 #ifdef HAVE_STEAM
-			while (auto steam_event = STEAMSHIM_pump()) {
-				switch (steam_event->type) {
-					case SHIMEVENT_IS_OVERLAY_ACTIVATED:
-						if (steam_event->okay && get_game_state() == _game_in_progress && !game_is_networked)
-						{
-							pause_game();
-						}
-						break;
+		while (auto steam_event = STEAMSHIM_pump()) {
+			switch (steam_event->type) {
+				case SHIMEVENT_IS_OVERLAY_ACTIVATED:
+					if (steam_event->okay && get_game_state() == _game_in_progress && !game_is_networked)
+					{
+						pause_game();
+					}
+					break;
 
-					default:
-						break;
-				}
+				default:
+					break;
 			}
+		}
 #endif
-		}
+	}
 
-		execute_timer_tasks(machine_tick_count());
-		idle_game_state(machine_tick_count());
+	execute_timer_tasks(machine_tick_count());
+	idle_game_state(machine_tick_count());
 
-		auto fps_target = get_fps_target();
-		if (!get_keyboard_controller_status())
-		{
-			fps_target = 30;
-		}
-	
-		if (game_state == _game_in_progress && fps_target != 0)
-		{
-			int elapsed_machine_ticks = machine_tick_count() - cur_time;
-			int desired_elapsed_machine_ticks = MACHINE_TICKS_PER_SECOND / fps_target;
+	auto fps_target = get_fps_target();
+	if (!get_keyboard_controller_status())
+	{
+		fps_target = 30;
+	}
 
-			if (desired_elapsed_machine_ticks - elapsed_machine_ticks > desired_elapsed_machine_ticks / 3)
-			{
-				sleep_for_machine_ticks(1);
-			}
-		}
-		else if (game_state != _game_in_progress)
+	if (game_state == _game_in_progress && fps_target != 0)
+	{
+		int elapsed_machine_ticks = machine_tick_count() - cur_time;
+		int desired_elapsed_machine_ticks = MACHINE_TICKS_PER_SECOND / fps_target;
+
+		if (desired_elapsed_machine_ticks - elapsed_machine_ticks > desired_elapsed_machine_ticks / 3)
 		{
-			static uint64_t last_redraw = 0U;
-			if (machine_tick_count() > last_redraw + TICKS_PER_SECOND / 30)
-			{
-				update_game_window();
-				last_redraw = machine_tick_count();
-			}
+			sleep_for_machine_ticks(1);
 		}
 	}
+	else if (game_state != _game_in_progress)
+	{
+		static uint64_t last_redraw = 0U;
+		if (machine_tick_count() > last_redraw + TICKS_PER_SECOND / 30)
+		{
+			update_game_window();
+			last_redraw = machine_tick_count();
+		}
+	}
+}
+
+#ifdef __EMSCRIPTEN__
+// Web port (see ../WEB_PORT_PLAN.md, M4c): called once per browser frame.
+// main_event_loop() below hands us off to the browser via
+// emscripten_set_main_loop(..., simulate_infinite_loop=1), which never
+// returns to its caller (it unwinds the C++ stack internally) -- so unlike
+// the native while loop, nothing runs after that call in main_event_loop()
+// or main.cpp's main() to notice _quit_game and shut down. This callback
+// does that job itself instead.
+static void main_event_loop_emscripten_callback(void)
+{
+	short game_state = get_game_state();
+	if (game_state == _quit_game)
+	{
+		emscripten_cancel_main_loop();
+		try { shutdown_application(); } catch (...) {}
+		return;
+	}
+	main_event_loop_iteration(game_state);
+}
+#endif
+
+void main_event_loop(void)
+{
+#ifdef __EMSCRIPTEN__
+	emscripten_set_main_loop(main_event_loop_emscripten_callback, 0, 1);
+#else
+	short game_state;
+	while ((game_state = get_game_state()) != _quit_game) {
+		main_event_loop_iteration(game_state);
+	}
+#endif
 }
 
 static bool has_cheat_modifiers(void)

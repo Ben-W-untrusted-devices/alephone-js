@@ -556,6 +556,82 @@ here is implicit, not explicit permission to redistribute.
     for the same reason GL rendering was deferred (see M3b-iv note): it's a
     real architectural choice, not obviously not the user's to make
     unilaterally, and better to surface clearly than to guess.
+  - **Decision: `emscripten_set_main_loop`, not Asyncify.** Before deciding,
+    measured Asyncify's actual cost on this build rather than quoting
+    generic numbers: relinking with `-sASYNCIFY=1` (whole reachable call
+    graph, no `ASYNCIFY_ONLY` restriction) produced a working
+    `alephone.wasm` at +9% size (47.98MB → 52.28MB) on this `-g -O2` debug
+    build — smaller than the commonly-quoted 50-100%+, though a stripped
+    `-O3` release build would likely show a higher *relative* overhead
+    (smaller baseline diluting less). Runtime perf cost wasn't measured
+    (would need real gameplay through a hang-prone harness). Investigated
+    scope for the alternative first: `main_event_loop()` isn't the only
+    blocking loop — `dialog::run()` (`Misc/sdl_dialogs.cpp:2232`) is a
+    second, structurally identical one, called *synchronously from inside*
+    `main_event_loop()`'s call tree (e.g. `iQuitGame` →
+    `quit_without_saving()` → `d.run()`, `interface.cpp:1357`;
+    `iPreferences` → `handle_preferences()` → `d.run()`,
+    `interface.cpp:1422`), at ~28 live call sites (`grep -rn "\.run("`,
+    minus ones compiled out by `DISABLE_NETWORKING`). Given the loop isn't
+    waiting on any genuinely async browser API (no `fetch`/`await` — it's
+    self-imposed blocking from polling SDL events), this is the textbook
+    case Emscripten's own docs point to `emscripten_set_main_loop` for, not
+    Asyncify's actual strength (arbitrary-depth resumable yields onto a
+    real async operation). Chose to accept the wider blast radius (many
+    call sites, not one) over Asyncify's size/perf tax and toolchain
+    complexity.
+  - **M4c-i (done): `main_event_loop()` converted, verified end-to-end —
+    no more hang.** `shell.cpp`'s `main_event_loop()` now branches on
+    `__EMSCRIPTEN__`: the loop body was factored out, unchanged, into
+    `main_event_loop_iteration()` (native builds still just call it from
+    the original `while` loop, so this is a pure refactor there — verified
+    by diffing the extracted body against the original), and the
+    Emscripten branch instead calls `emscripten_set_main_loop(callback, 0,
+    1)`. `last_event_poll` became a function-local `static` rather than a
+    loop-local, which is behavior-preserving in both branches since
+    `main_event_loop()` itself is only ever entered once per program
+    lifetime (`main.cpp`) either way. Because
+    `simulate_infinite_loop=1` means the call never returns to its caller
+    (Emscripten unwinds the C++ stack internally), nothing after it in
+    `main_event_loop()`/`main()` runs anymore to notice `_quit_game` and
+    call `shutdown_application()` — the per-frame callback does that job
+    itself now instead (checks for `_quit_game` first, cancels the loop,
+    and shuts down, rather than running an iteration). Verified for real,
+    not just "it compiles": mounted synthetic scenario files, called
+    `Module.callMain(["/data"])`, and confirmed the tab stayed fully
+    responsive throughout — `screenshot` succeeded promptly (previously it
+    timed out with "the page is not compositing frames"), a real in-canvas
+    dialog rendered correctly, a live `computer` click on its button was
+    processed, and the engine shut down cleanly in response
+    (`shutdown_application()` ran, confirmed by the page's visible state
+    changing). Also caught and worked around an unrelated environment
+    issue while testing: port 5173 was occupied by a stray, unrelated dev
+    server from something else on this machine (confirmed by loading a
+    completely different app's UI) — `curl`'s 200 status code alone wasn't
+    enough to catch this, only checking actual page content was; fixed by
+    pointing `web/build-engine.sh`'s dev server at port 5180 instead (see
+    `.claude/launch.json`, one directory above this repo).
+  - **M4c-ii (not done, and not proven safe by the above test): every
+    `dialog::run()` call site.** The one verified above (`alert_user`'s
+    fatal-error dialog, `CSeries/csalerts_sdl.cpp:145`) happened to work in
+    that manual test — the tab responded to a click on it and quit
+    cleanly — but this should *not* be read as evidence that
+    `dialog::run()` is now safe in general. `dialog::run()`'s own loop
+    calls `yield()` (`CSeries/csmisc_sdl.cpp:71`), which is just
+    `std::this_thread::yield()` — a genuine no-op on a single-threaded,
+    non-Asyncify Emscripten build, since there's no other OS thread to
+    yield to. The manual test's click and the follow-up check were two
+    separate tool calls with real (if small) wall-clock latency between
+    them, which is plausibly why it happened to work — not proof that a
+    still-synchronous `dialog::run()` call reliably processes input without
+    stalling the tab under less forgiving timing (rapid interaction,
+    heavier dialogs like Preferences' nested sub-dialogs, slower devices).
+    Treat `dialog::run()` as still needing the same
+    `emscripten_set_main_loop`-shaped treatment as `main_event_loop()` got
+    — converting call sites like `quit_without_saving()`/
+    `handle_preferences()` from "call a function, block, get a result,
+    keep going" into an explicit trigger-and-resume-next-frame shape — as
+    a real, separate follow-up task, not yet started.
 
 ## Milestones / Task list
 
@@ -627,13 +703,19 @@ here is implicit, not explicit permission to redistribute.
       `FS`, not just unit tests.
   - [ ] **M4b — IDBFS persistence** so re-upload isn't required every
         session. Not started.
-- [ ] **New, undecided blocker found via M4a: `main_event_loop()`'s
-      blocking `while` loop doesn't work in a browser tab** (see Findings)
-      — needs `emscripten_set_main_loop` or Asyncify, a real architectural
-      choice not yet made. This is now the actual thing standing between
-      "engine boots" and "engine does anything visible run-to-run", ahead
-      of both M4b and M3b-iv/OpenGL — mounted data can't be exercised at
-      all while `main()` can't return control to the browser.
+- [x] **M4c-i — `main_event_loop()` converted to `emscripten_set_main_loop`,
+      verified end-to-end (no more hang).** Decision made after measuring
+      Asyncify's real cost on this build rather than guessing — see
+      Findings for the numbers and the call-site-count reasoning. Verified
+      via the browser harness: module load, file mount, `callMain`, a real
+      in-canvas dialog rendering, a live click, and a clean shutdown, all
+      with the tab staying responsive throughout.
+  - [ ] **M4c-ii — every `dialog::run()` call site** (Preferences,
+        Quit-confirm, alerts, Load/Save, ~28 live call sites) still needs
+        the same treatment. One happened to work in manual testing, but
+        `dialog::run()`'s own `yield()` is a genuine no-op on this
+        single-threaded build — see Findings for why that one test isn't
+        evidence this is generally safe. Not started.
 - [ ] **M5 — Audio**
 - [ ] **M6 — Save games / prefs persistence**
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)
@@ -678,11 +760,20 @@ once scenario data is present and `have_default_files()` passes,
 `Module.callMain()` reaches `main_event_loop()` (`shell.cpp`) — a classic
 blocking `while` loop — which hangs the entire browser tab, since nothing
 in that loop ever yields back to the browser's own (single-threaded,
-cooperative) event loop. This needs either `emscripten_set_main_loop`
-(restructuring the loop into a per-frame callback) or Asyncify
-(`-sASYNCIFY=1`, lower-invasiveness but real binary-size/perf cost) — a
-real architectural decision, deliberately left open this session rather
-than guessed at, the same way GL rendering was (see Findings and the
-M3b-iv note above). M4b (IDBFS persistence) and M3b-iv (OpenGL) both
-remain not-yet-started and lower priority than this new blocker, since
-neither matters until `main()` can actually run past its first frame.
+cooperative) event loop.
+
+**That blocker is now resolved for `main_event_loop()` itself (M4c-i),
+decided in favor of `emscripten_set_main_loop` over Asyncify** after
+measuring Asyncify's real cost on this build (+9% wasm size on a debug
+build — see Findings) and investigating scope (`dialog::run()` is a second
+blocking loop, called from *inside* `main_event_loop()`'s call tree at ~28
+live sites, not a separate independent one) rather than guessing. Verified
+end-to-end: mounted data, called `callMain`, and the tab stayed fully
+responsive — a real in-canvas dialog rendered, a live click was processed,
+and the engine shut down cleanly. **Not yet done: `dialog::run()` itself
+(M4c-ii)** — needs the same treatment at each of its ~28 call sites
+(Preferences, Quit-confirm, alerts, Load/Save); one alert dialog happened
+to work in manual testing, but its `yield()` is a genuine no-op on this
+build, so that isn't evidence the general case is safe (see Findings).
+
+M4b (IDBFS persistence) and M3b-iv (OpenGL) both remain not-yet-started.
