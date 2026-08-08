@@ -665,6 +665,83 @@ here is implicit, not explicit permission to redistribute.
     now that `-sALLOW_MEMORY_GROWTH`/`-sASSERTIONS` are in the rebuilt
     engine — if it still aborts, the message should now name the actual
     failure instead of a bare `Aborted()`.
+  - **The retry (still by the user, real data) did abort again, and
+    `-sASSERTIONS=1` did its job: the real failure is a thrown C++
+    exception with no exception-catching support linked in** —
+    `Aborted(Assertion failed: Exception thrown, but exception catching is
+    not enabled. Compile with -sNO_DISABLE_EXCEPTION_CATCHING or
+    -sEXCEPTION_CATCHING_ALLOWED=[..] to catch.)`. Emscripten disables
+    C++ exception *catching* by default (a size/perf tradeoff) — `throw`
+    still compiles, but nothing unwinds to a `catch`, so any throw is a
+    hard abort regardless of how many `try`/`catch` blocks exist in the
+    source (and this codebase has many, including right around the
+    suspected call site — see below). The original stack trace (before
+    `-sASSERTIONS`) named `std::__2::locale::use_facet`, which is exactly
+    what `std::use_facet` does per the standard when the requested facet
+    isn't installed: throws `std::bad_cast`.
+  - **Root-caused, without touching real Marathon 2 data, to
+    `PluginLoader::ParsePlugin` (`XML/Plugins.cpp:349`) parsing a real
+    scenario's `Plugins/*/Plugin.xml`.** This code path only runs when a
+    `Plugins/` folder is present — absent from every earlier synthetic
+    test in this session, present in the real Marathon 2 folder (part of
+    why the very first 4-file smoke test never hit this). Suspected the
+    numeric `<checksum>` extraction inside `<map_patch>` handling
+    (`cs_tree.get_value(static_cast<uint32_t>(0))`, line ~504) —
+    `InfoTree` is a `boost::property_tree` tree, and its numeric
+    `get_value<T>()` goes through a stream-based translator
+    (`stringstream >> value`), which is locale-sensitive. Confirmed by
+    reproduction: mounted a **synthetic** `Plugin.xml` using Aleph One's
+    own public, open plugin-manifest schema (documented directly in
+    `Plugins.cpp` — not copyrighted Marathon 2 content) containing a
+    `<map_patch><checksum>305419896</checksum>...` element alongside tiny
+    placeholder `Map`/`Shapes`/`Images`/`Sounds` files, and got the
+    identical `Aborted(Assertion failed: Exception thrown...)` message.
+  - **Two fix attempts, both real, both currently blocked — this needs
+    dedicated follow-up, not a quick patch:**
+    1. **Legacy JS-based exception catching** (`-sDISABLE_EXCEPTION_CATCHING=0`,
+       what the abort message itself suggests): confirmed it's a link-time-
+       only flag — a manual relink (reusing the existing, unmodified `.o`
+       files, no recompile) picked up a different, exception-aware system
+       library variant (`libc++-debug.a`/`libc++abi-debug.a` instead of the
+       `-noexcept` variants) and linked successfully. But running the same
+       synthetic-plugin repro against that build failed differently, with
+       `null function` — some ABI/runtime mismatch between our already-
+       compiled `.o` files and the newly-linked exception-aware runtime.
+       Not resolved; may need our own object files recompiled too (with
+       `-fexceptions` or equivalent), not just relinked.
+    2. **Modern WASM-native exceptions** (`-fwasm-exceptions`, Emscripten's
+       currently-recommended approach — better runtime characteristics
+       than the JS-based emulation): requires the flag at *both* compile
+       and link time, so re-ran `emconfigure` with
+       `CXXFLAGS=CFLAGS="-fwasm-exceptions"` and did a full rebuild. That
+       surfaced a *third* problem: `-fwasm-exceptions` also changes the
+       underlying `setjmp`/`longjmp` codegen model (Emscripten's own
+       `-mllvm -wasm-enable-sjlj`), and vcpkg's prebuilt `libfreetype.a`/
+       `libpng16.a` (which use `setjmp`/`longjmp` internally for their own
+       error handling, as does this project's bundled Lua's `ldo.o`) were
+       built without it — link failed with `undefined symbol:
+       emscripten_longjmp` across all of them. Fixing this route means
+       rebuilding those vcpkg dependencies with matching flags too, not
+       just this project's own code — a real, but bigger, undertaking
+       (`vcpkg/install-wasm32-emscripten.sh` would need the matching
+       compiler flags threaded through, and Lua's `ldo.o` reconsidered).
+    Reverted the `-fwasm-exceptions` `emconfigure` run and rebuilt clean
+    (confirmed via the browser harness that the baseline 4-file smoke test
+    still passes) rather than leave `build-wasm/`/`web/engine/` in a
+    broken state — `build-engine.sh` currently ships neither fix.
+  - **This needs to land eventually — this codebase relies on real,
+    working C++ exception handling throughout** (not just `Plugins.cpp`:
+    `main.cpp`'s own `main()` wraps everything in `catch
+    (std::exception&)`/`catch (...)`, expecting it to actually work), so
+    "just don't hit code paths that throw" isn't a real long-term option
+    — some real scenario data (evidently including plausible, ordinary
+    plugin manifests with `map_patch`/`checksum` elements) will always hit
+    this. Left as an explicit, not-yet-started follow-up rather than
+    patched over, given both attempted fixes need more work than fits
+    here: either recompiling this project's own object files to properly
+    pair with `-sDISABLE_EXCEPTION_CATCHING=0`'s exception-aware runtime,
+    or extending the `-fwasm-exceptions` route through
+    `install-wasm32-emscripten.sh`'s vcpkg dependencies and Lua.
 
 ## Milestones / Task list
 
@@ -749,6 +826,19 @@ here is implicit, not explicit permission to redistribute.
         `dialog::run()`'s own `yield()` is a genuine no-op on this
         single-threaded build — see Findings for why that one test isn't
         evidence this is generally safe. Not started.
+- [ ] **M4d — Enable real C++ exception catching.** Real scenario data
+      (confirmed via a synthetic repro of a plugin manifest, not real
+      Marathon 2 content) throws during `Plugins.cpp`'s XML/property_tree
+      parsing, and Emscripten's default build has no exception-catching
+      support linked in at all, so any throw anywhere is a hard abort —
+      not specific to plugins, just the first place real data reaches it.
+      Two approaches investigated, both blocked on real complications (see
+      Findings): legacy JS-based catching links but produces a runtime
+      `null function` error; modern `-fwasm-exceptions` needs vcpkg's
+      `libfreetype`/`libpng` (and this project's bundled Lua) rebuilt with
+      a matching `setjmp`/`longjmp` model too. Not started; reverted to a
+      clean, working (but exception-unsafe) baseline rather than ship
+      either half-fix.
 - [ ] **M5 — Audio**
 - [ ] **M6 — Save games / prefs persistence**
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)
