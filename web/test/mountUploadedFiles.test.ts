@@ -26,7 +26,7 @@ class FakeFS implements EmscriptenFS {
 }
 
 describe("mountUploadedFiles", () => {
-  it("writes flat files directly under mountRoot, canonicalizing recognized top-level names", async () => {
+  it("writes flat files directly under mountRoot, keeping their real names", async () => {
     const files = collectFromFileList([
       new File(["abc"], "Map.sceA"),
       new File(["defg"], "Shapes.shpA"),
@@ -36,8 +36,8 @@ describe("mountUploadedFiles", () => {
     const result = await mountUploadedFiles(fs, files, "/data");
 
     expect(result).toEqual({ mountedCount: 2, skippedCount: 0, mountRoot: "/data" });
-    expect([...fs.files.keys()].sort()).toEqual(["/data/Map", "/data/Shapes"]);
-    expect(fs.files.get("/data/Map")).toEqual(new Uint8Array([97, 98, 99]));
+    expect([...fs.files.keys()].sort()).toEqual(["/data/Map.sceA", "/data/Shapes.shpA"]);
+    expect(fs.files.get("/data/Map.sceA")).toEqual(new Uint8Array([97, 98, 99]));
   });
 
   it("strips the common leading folder and recreates the rest of the structure", async () => {
@@ -54,12 +54,13 @@ describe("mountUploadedFiles", () => {
 
     expect(result.mountedCount).toBe(2);
     expect(fs.dirsCreated).toContain("/data/Plugins/Enhancements");
-    // The top-level Map.sceA (directly under the dropped folder) is renamed
-    // to the engine's expected canonical name; the nested plugin file, not
-    // being a top-level scenario file, keeps its real name -- see
-    // WEB_PORT_PLAN.md, M4.
+    // Real names are preserved throughout -- see WEB_PORT_PLAN.md, M4g: real
+    // scenarios ship their own Scripts/Filenames.mml telling the engine
+    // their actual on-disk names, loaded automatically before any lookup
+    // that would need a "canonical" name, so renaming here would only
+    // break that mechanism.
     expect([...fs.files.keys()].sort()).toEqual([
-      "/data/Map",
+      "/data/Map.sceA",
       "/data/Plugins/Enhancements/Enhancements.mml",
     ]);
   });
@@ -91,24 +92,6 @@ describe("mountUploadedFiles", () => {
     ]);
   });
 
-  it("only canonicalizes recognized top-level scenario files, not nested ones with the same extension", async () => {
-    const files = collectFromFileList([
-      withRelativePath(new File(["a"], "Map.sceA"), "Marathon 2/Map.sceA"),
-      withRelativePath(
-        new File(["b"], "SubMap.sceA"),
-        "Marathon 2/Plugins/MyMod/SubMap.sceA"
-      ),
-    ]);
-    const fs = new FakeFS();
-
-    await mountUploadedFiles(fs, files, "/data");
-
-    expect([...fs.files.keys()].sort()).toEqual([
-      "/data/Map",
-      "/data/Plugins/MyMod/SubMap.sceA",
-    ]);
-  });
-
   it("strips trailing slashes from mountRoot", async () => {
     const files = collectFromFileList([new File(["a"], "Map.sceA")]);
     const fs = new FakeFS();
@@ -116,7 +99,7 @@ describe("mountUploadedFiles", () => {
     const result = await mountUploadedFiles(fs, files, "/data/");
 
     expect(result.mountRoot).toBe("/data");
-    expect(fs.files.has("/data/Map")).toBe(true);
+    expect(fs.files.has("/data/Map.sceA")).toBe(true);
   });
 
   it("skips entries with an unsafe or empty relative path", async () => {

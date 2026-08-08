@@ -487,8 +487,10 @@ here is implicit, not explicit permission to redistribute.
     via the Browser pane tool. Two real, non-obvious things were found this
     way that no amount of reading the C++ source would have surfaced
     quickly:
-    1. **The engine looks up its core scenario files by exact,
-       extensionless name** (`"Map"`, `"Shapes"`, `"Images"`, `"Sounds"` —
+    1. **⚠️ Superseded by M4g below — kept for the reasoning history, but
+       the rename this led to was wrong and has been reverted.** The claim
+       was that the engine looks up its core scenario files by exact,
+       extensionless name (`"Map"`, `"Shapes"`, `"Images"`, `"Sounds"` —
        see `Source_Files/Misc/DefaultStringSets.cpp`'s `"Filenames"` string
        set and `Source_Files/Files/preprocess_map_sdl.cpp`'s
        `have_default_files()`/`get_default_spec()`, which does a plain
@@ -538,6 +540,80 @@ here is implicit, not explicit permission to redistribute.
        serving that real data over even a local, ephemeral HTTP port for
        test purposes was correctly refused by this session's safety
        tooling, which is the right call per the hard constraint above.)
+  - **M4g — the extensionless-name rename above was wrong, and broke real
+    scenarios specifically. Corrected, and verified against real Marathon 2
+    data.** After M4d/M4e/M4f landed, a user retry with the real Marathon 2
+    folder kept hitting the "please install the files" alert (`error -1`)
+    even though a diagnostic build confirmed `Map`/`Shapes`/`Images`/
+    `Sounds` were genuinely present under exactly the renamed canonical
+    names. Root-caused by finally testing against the real data directly —
+    not the browser (which can't run a native file picker via automation,
+    and serving the data over HTTP was correctly refused, as above) but
+    locally via **Node + Emscripten's NODEFS** (a real host-filesystem
+    passthrough into the WASM virtual FS; the real data is only ever read
+    from disk into this Node process's own memory, via `FS.readFile`, and
+    is never written back, transmitted, copied into the repo, or bundled —
+    same constraint the existing `realMarathon2Data.test.ts` already
+    operates under, just exercising the compiled engine instead of just
+    the TS layer). This gave a fast, reliable local iteration loop — no
+    browser flakiness, immediate real stack traces — that the browser
+    round-trips this whole investigation had been relying on couldn't
+    match.
+    - Real cause: `../Marathon 2/Scripts/Filenames.mml` — a real, ordinary
+      part of the actual Marathon 2 scenario, not a corruption or edge
+      case — contains a `<stringset index="129">` block explicitly
+      overriding the engine's default filename lookups to the scenario's
+      *actual* on-disk names: `Shapes.shpA`, `Sounds.sndA`, `Map.sceA`,
+      even `Physics Models/Standard.phyA` (a subdirectory path). This is
+      loaded automatically by the ordinary MML-loading machinery
+      (`LoadBaseMMLScripts`, `shell.cpp`), which already runs against
+      whatever's mounted at `data_search_path` before any of these lookups
+      happen — exactly the same mechanism a native install already relies
+      on. **The M4a rename directly defeated this**: stripping the
+      extension to produce `"Map"` left nothing at the path the
+      scenario's own script was, correctly, asking for (`"Map.sceA"`).
+      Confirmed directly: relinking with the diagnostic restored and
+      running via the Node+NODEFS harness showed `get_default_spec`
+      searching for `Map.sceA`/`Shapes.shpA`/`Sounds.sndA`/`Images.imgA`
+      specifically (not the bundled engine defaults) — and, after removing
+      the rename, every one of those lookups succeeding
+      (`Exists()=1`) against the real, unmodified files.
+    - **Fix**: removed `mountUploadedFiles`'s canonicalization step
+      entirely (`CANONICAL_TOP_LEVEL_NAMES` and its use — see the current
+      `web/src/fs/mountUploadedFiles.ts`). Files now keep their real names
+      throughout, exactly as dropped/picked — only the shared leading
+      wrapper folder is still stripped (that part was correct, and
+      independently re-verified against the real data below). This isn't
+      a narrower fix for one scenario: it's the *general* case, since any
+      scenario can define its own `Filenames.mml` (or omit one, falling
+      back to the engine's own bundled defaults, `"Map"` etc. — which is
+      presumably why the M4a testing, using synthetic data with no
+      `Filenames.mml` of its own, never caught this). Updated
+      `web/test/mountUploadedFiles.test.ts` to match (real names preserved
+      throughout, not renamed).
+    - **Verified end-to-end against the real Marathon 2 data**, via the
+      Node+NODEFS harness: mounted the real folder unmodified, ran
+      `callMain`, and confirmed every one of `have_default_files()`'s
+      lookups now succeeds (`Map.sceA`, `Images.imgA`, `Shapes.shpA` all
+      `Exists()=1`), and execution proceeds past all data-loading and
+      preferences logic into actual window/screen creation
+      (`SDL_CreateWindow` → `Emscripten_CreateWindow`), where it hits
+      `ReferenceError: document is not defined` — expected and correct:
+      Node has no DOM, the same category of Node-only limitation M3c
+      already found with `window.screen`. This is real proof the fix
+      works against the actual data; the remaining boundary is purely
+      "Node isn't a browser," not anything left to fix here. Also
+      re-verified the corrected, no-rename `mountUploadedFiles` in the
+      browser harness with synthetic data to confirm nothing else
+      regressed.
+    - **A safety note on the Node+NODEFS approach**: NODEFS mounts are a
+      real, writable passthrough to the host filesystem — mounting it
+      directly at the path the engine operates on would risk the engine
+      writing back to the real Marathon 2 folder (e.g. any incidental
+      lock/cache file). The harness instead mounts NODEFS at a separate
+      staging path used *only* for `FS.readFile`, then copies those bytes
+      into MEMFS (in-process memory only) for the engine to actually run
+      against — the real directory is only ever opened for reading.
   - **New, more significant blocker found only by getting main() to
     actually run against present data: `main_event_loop()` (`shell.cpp`) is
     a classic blocking `while` loop, incompatible with a browser tab's
@@ -947,10 +1023,11 @@ here is implicit, not explicit permission to redistribute.
       `find_files_sdl.cpp`/`FileHandler` expect.** See Findings:
       `mountUploadedFiles.ts`, the `emar`/`emranlib` build fix,
       `build-engine.sh` (a real, browser-loadable `alephone.js`/`.wasm`),
-      and `game.html` (a manual harness), plus the two real bugs this
-      surfaced and fixed (canonical extensionless top-level names; leading-
-      folder stripping). Verified end-to-end against the real Emscripten
-      `FS`, not just unit tests.
+      and `game.html` (a manual harness). Files keep their real names and
+      structure (only a shared leading wrapper folder is stripped) — see
+      M4g: an earlier version of this milestone also renamed the four
+      canonical scenario files, which turned out to be wrong and was
+      reverted after testing against real Marathon 2 data.
   - [ ] **M4b — IDBFS persistence** so re-upload isn't required every
         session. Not started.
 - [x] **M4c-i — `main_event_loop()` converted to `emscripten_set_main_loop`,
@@ -983,17 +1060,27 @@ here is implicit, not explicit permission to redistribute.
   - [x] **STACK_SIZE bump** — Emscripten's 64KB default was too small for
         real scenario data's recursion depth; `-sSTACK_SIZE=4MB` in
         `web/build-engine.sh`.
-  - [x] **`ScenarioChooser.cpp` XML-parse robustness fix** — a genuine,
-        pre-existing bug (uncaught `read_xml()` exception on any
+  - [x] **`ScenarioChooser.cpp` XML-parse robustness fix (M4e)** — a
+        genuine, pre-existing bug (uncaught `read_xml()` exception on any
         non-well-formed file in a scenario's `Scripts/` folder) that only
         started surfacing loudly once M4d's real exception catching landed
         (previously a generic hard abort either way). Root-caused via
         temporary diagnostic instrumentation rather than continued
-        guessing; fix verified against a synthetic repro shaped exactly
-        like the real Marathon 2 top level (`Demos`/`"Physics
-        Models"`/`Plugins`/`Scripts` alongside the four canonical files) —
-        `have_default_files()` now correctly passes and the engine
-        proceeds normally.
+        guessing.
+  - [x] **`main.cpp`'s top-level catch now prints the real exception
+        message (M4f)** — `logFatal()` alone was silently dropping it
+        whenever the log file failed to open, which is likely on this
+        target.
+  - [x] **M4g — corrected a wrong fix from M4a, verified against real
+        Marathon 2 data.** `mountUploadedFiles` no longer renames
+        `Map.sceA`/`Shapes.shpA`/etc. to extensionless "canonical" names —
+        real scenarios (confirmed with the actual Marathon 2 data) ship
+        their own `Scripts/Filenames.mml` telling the engine their real
+        on-disk names, and the rename broke exactly that mechanism. Found
+        and verified using a new local Node + NODEFS test harness (real
+        data read directly from disk into Node's memory, never written
+        back, transmitted, or committed) — see Findings for the full
+        story and the harness's safety design.
 - [ ] **M5 — Audio**
 - [ ] **M6 — Save games / prefs persistence**
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)
@@ -1069,5 +1156,32 @@ that needed it) to match. Verified end-to-end, twice, including a
 from-scratch clean rebuild: the exact repro that used to abort now runs
 `callMain` to completion with no error and a fully responsive tab.
 
+**Real-data testing continued to surface real bugs, one per retry (M4e,
+M4f, M4g)** — a genuine, pre-existing `ScenarioChooser.cpp` crash on any
+non-well-formed file in `Scripts/` (only surfaced loudly once M4d's real
+exception catching landed), a logging gap that was silently swallowing the
+actual exception message on every crash, and — the big one — **M4a's
+extensionless-name rename was itself wrong**, discovered only by finally
+testing against the real Marathon 2 data directly rather than synthetic
+approximations of it. Built a local **Node + NODEFS test harness**
+specifically to make that possible (the browser can't drive a native file
+picker via automation, and serving the real data over even a local HTTP
+port was correctly refused) — real data read directly from disk into a
+Node process's own memory, never written back, transmitted, or committed,
+matching the constraints the existing `realMarathon2Data.test.ts` already
+operates under. That harness showed real Marathon 2's own
+`Scripts/Filenames.mml` overriding the engine's default filenames to its
+actual on-disk names (`Map.sceA`, etc.) — exactly what M4a's rename
+broke. Fixed by removing the rename entirely; `mountUploadedFiles` now
+preserves real filenames throughout. **Verified end-to-end against the
+real data**: every `have_default_files()` lookup now succeeds, and
+execution proceeds past all data-loading and preferences logic into
+actual window/screen creation, where it hits Node's expected "no DOM"
+limitation (`document is not defined`) rather than any remaining bug in
+this code.
+
 M4b (IDBFS persistence), M4c-ii (`dialog::run()`'s own blocking loop —
-see above), and M3b-iv (OpenGL) all remain not-yet-started.
+see above), and M3b-iv (OpenGL) all remain not-yet-started. The next
+real-browser retry (not Node) is the natural next step — nothing in this
+session's testing has gotten further than the point Node's own DOM
+limitation now marks.

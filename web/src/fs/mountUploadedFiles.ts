@@ -42,10 +42,9 @@ function sanitizedSegments(relativePath: string): string[] | null {
  * case for a dropped/picked folder, e.g. "Marathon 2/Map.sceA"), strips it.
  * The engine's data_search_path only ever gets one directory to look in
  * (see WEB_PORT_PLAN.md, M4); scenario data lives directly under that
- * directory on a native install (Map, Plugins/, Scripts/, ...), not nested
- * one level deeper under the folder's own name, so without this, nothing
- * -- not even the recognized-extension rename below -- would end up where
- * the engine looks.
+ * directory on a native install (Map.sceA, Plugins/, Scripts/, ...), not
+ * nested one level deeper under the folder's own name, so without this,
+ * nothing would end up where the engine looks.
  */
 function stripCommonLeadingFolder(allSegments: readonly string[][]): string[][] {
   if (allSegments.length === 0) return [];
@@ -57,39 +56,27 @@ function stripCommonLeadingFolder(allSegments: readonly string[][]): string[][] 
 }
 
 /**
- * The engine looks up its core scenario files by exact, extensionless name
- * (e.g. "Map", not "Map.sceA" -- see Source_Files/Misc/DefaultStringSets.cpp
- * and Source_Files/Files/preprocess_map_sdl.cpp's have_default_files(),
- * confirmed by running the compiled engine against mounted test files: it
- * kept reporting the data as missing until renamed). The extensions
- * (.sceA/.shpA/...) exist for this widget's own "looks like a scenario"
- * recognition (see knownFileTypes.ts) and, separately, for the file-browser
- * chooser UI -- not for how the engine finds its default files. Only the
- * four with a single fixed expected name are covered; saved games, films,
- * and physics models aren't looked up this way and keep their real names.
- */
-const CANONICAL_TOP_LEVEL_NAMES: Readonly<Record<string, string>> = {
-  scea: "Map",
-  shpa: "Shapes",
-  snda: "Sounds",
-  imga: "Images",
-};
-
-function canonicalizeTopLevelName(name: string): string {
-  const dot = name.lastIndexOf(".");
-  if (dot === -1) return name;
-  const ext = name.slice(dot + 1).toLowerCase();
-  return CANONICAL_TOP_LEVEL_NAMES[ext] ?? name;
-}
-
-/**
  * Writes the bytes of every UploadableFile (from web/src/upload) into an
  * Emscripten FS-like filesystem, under mountRoot, preserving the relative
- * directory structure the user selected/dropped. Intended to run before the
- * compiled engine's main() is invoked (see WEB_PORT_PLAN.md, M4): the engine
- * expects a real directory of scenario data files, and browsers have no
- * filesystem to point it at, so this is the bridge from the upload widget
- * (M1) to that expectation.
+ * directory structure and original filenames the user selected/dropped
+ * (only a single shared leading wrapper folder is stripped -- see
+ * stripCommonLeadingFolder). Intended to run before the compiled engine's
+ * main() is invoked (see WEB_PORT_PLAN.md, M4): the engine expects a real
+ * directory of scenario data files, and browsers have no filesystem to
+ * point it at, so this is the bridge from the upload widget (M1) to that
+ * expectation.
+ *
+ * Deliberately does *not* rename files to any "canonical" name (an earlier
+ * version of this function renamed e.g. Map.sceA -> Map, reasoning that the
+ * engine looks up its default map/shapes/sounds/images by exact,
+ * extensionless name -- see Source_Files/Misc/DefaultStringSets.cpp). That
+ * was wrong: real, properly-packaged scenarios (confirmed with the actual
+ * Marathon 2 data, tested locally via Node -- see WEB_PORT_PLAN.md, M4g)
+ * ship their own Scripts/Filenames.mml overriding those defaults to their
+ * real on-disk names (e.g. "Map.sceA", even a subdirectory path for the
+ * physics model), loaded automatically before those lookups ever run --
+ * exactly how a native install already works. Renaming files here just
+ * broke that mechanism for exactly the scenarios it matters most for.
  */
 export async function mountUploadedFiles(
   fs: EmscriptenFS,
@@ -116,9 +103,6 @@ export async function mountUploadedFiles(
   let mountedCount = 0;
   for (let i = 0; i < sanitized.length; i++) {
     const segments = stripped[i];
-    if (segments.length === 1) {
-      segments[0] = canonicalizeTopLevelName(segments[0]);
-    }
 
     if (segments.length > 1) {
       const dirPath = `${root}/${segments.slice(0, -1).join("/")}`;
