@@ -121,14 +121,28 @@ bool ScenarioChooserScenario::load(const std::string& path)
 
 			FileSpecifier mml = scripts + it->name;
 			boost::property_tree::ptree tree;
-			boost::property_tree::read_xml(mml.GetPath(), tree);
 
+			// Web port (see ../../WEB_PORT_PLAN.md, M4e): read_xml() itself
+			// used to sit outside this try block, so any non-well-formed
+			// file in Scripts/ (not a directory, not .lua, not a `~`
+			// backup) crashed the whole program -- previously silent
+			// (Emscripten disabled exception catching by default), now a
+			// loud, correctly-reported "unhandled exception" since M4d
+			// enabled real catching. This is a pre-existing robustness gap
+			// real usage happened to surface, not new behavior. Catching
+			// std::exception rather than just ptree_error, since a
+			// malformed-XML parse failure isn't guaranteed to share
+			// ptree_error's hierarchy across boost versions -- either way,
+			// the intent here is clearly "try to find a nice name from
+			// scripts, but don't crash if a particular file can't give us
+			// one."
 			try
 			{
+				boost::property_tree::read_xml(mml.GetPath(), tree);
 				name = tree.get<std::string>("marathon.scenario.<xmlattr>.name");
 				break;
 			}
-			catch (const boost::property_tree::ptree_error&)
+			catch (const std::exception&)
 			{
 
 			}

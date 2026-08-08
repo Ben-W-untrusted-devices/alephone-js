@@ -829,6 +829,59 @@ here is implicit, not explicit permission to redistribute.
     still no real Marathon 2 content) — no crash, no abort, tab stayed
     responsive, and the engine correctly reached its own "please install
     the files" check (since the dummy content still isn't a real WAD).
+  - **A third real bug: a genuinely correctly-mounted `/data` (verified —
+    `Map`/`Shapes`/`Images`/`Sounds` all present under exactly the right
+    names) still failed the "please install the files" check** — the same
+    message as if zero files were mounted, right after the two fixes
+    above. Root-caused by adding temporary diagnostic `fprintf`s to
+    `shell_options.cpp`/`shell.cpp`/`preprocess_map_sdl.cpp` (reverted once
+    the real cause was found and fixed — see below) rather than continuing
+    to guess from outside: `have_default_files()` genuinely returned
+    `false` for a synthetic repro shaped exactly like the real Marathon 2
+    top level (`Map`/`Shapes`/`Images`/`Sounds` plus `Demos/`, `"Physics
+    Models/"`, `Plugins/`, `Scripts/`), even though the identical
+    canonical-names-only repro (no `Demos`/`Physics Models`/`Scripts`)
+    passed cleanly. The actual bug: `ScenarioChooserScenario::load()`
+    (`Misc/ScenarioChooser.cpp:91`, called unconditionally from
+    `initialize_application()` before the `have_default_files()` check
+    even runs) calls `boost::property_tree::read_xml()` directly on every
+    non-directory, non-`.lua`, non-`~`-suffixed file inside a scenario's
+    `Scripts/` folder — but that call sat *outside* the `try`/`catch` that
+    only wrapped the next line (`tree.get<...>()`). Any file in `Scripts/`
+    that isn't well-formed XML throws uncaught; before M4d that was a
+    generic hard abort, and after M4d (real exception catching) it's
+    instead correctly caught by `main()`'s own top-level handler, logged
+    as `"Unhandled exception"`, and exits with status 1 — silently, from
+    the browser's perspective, well before `have_default_files()` is ever
+    reached. **This is a genuine, pre-existing robustness gap in native
+    code** (not something the web port introduced) that real-world testing
+    happened to surface — matches the "program exited (with status: 1)"
+    message the user saw. Fixed by moving `read_xml()` inside the existing
+    `try`/`catch`, broadened to `catch (const std::exception&)` rather
+    than just `ptree_error` (an XML parse failure isn't guaranteed to
+    share that exact hierarchy across boost versions) — the existing code
+    already treats "couldn't extract a name from this script" as a
+    skippable, non-fatal case; a parse failure is just another instance of
+    that, not a reason to crash the whole program. Verified against the
+    same "shaped like real Marathon 2" synthetic repro that reproduced it
+    (still no real Marathon 2 content — a deliberately-malformed synthetic
+    `Scripts/script1.mml`, not a valid one): `have_default_files()` now
+    correctly returns `map=1 images=1 shapes=1`, and the engine proceeds
+    past it cleanly. **The diagnostic `fprintf`s themselves were removed
+    again** once the real fix landed — only the `ScenarioChooser.cpp` fix
+    remains.
+  - **A methodology note worth remembering**: mid-investigation, a
+    seemingly-clean revert-and-retest (via `git stash`) appeared to show
+    even the *diagnostic-free* baseline hanging on a previously-solid
+    repro — a real moment of doubt about whether something environmental
+    had broken. It hadn't: the Browser pane's "first `javascript_tool`
+    call after `callMain` times out" is a known, benign, recurring pattern
+    in this session (seen even in verified-working runs) — a follow-up
+    trivial eval (`1+1`) always confirmed the tab was actually fine. Two
+    consecutive timeouts without that follow-up check briefly looked like
+    a real regression and cost a redundant revert/rebuild cycle. Always
+    check responsiveness directly before concluding a hang, especially
+    right after a `callMain` call.
 
 ## Milestones / Task list
 
@@ -927,6 +980,20 @@ here is implicit, not explicit permission to redistribute.
       `freetype`/`libpng` (the only dependencies needing it) to match.
       Verified end-to-end, twice, including a from-scratch clean rebuild:
       the exact repro that used to abort now runs cleanly.
+  - [x] **STACK_SIZE bump** — Emscripten's 64KB default was too small for
+        real scenario data's recursion depth; `-sSTACK_SIZE=4MB` in
+        `web/build-engine.sh`.
+  - [x] **`ScenarioChooser.cpp` XML-parse robustness fix** — a genuine,
+        pre-existing bug (uncaught `read_xml()` exception on any
+        non-well-formed file in a scenario's `Scripts/` folder) that only
+        started surfacing loudly once M4d's real exception catching landed
+        (previously a generic hard abort either way). Root-caused via
+        temporary diagnostic instrumentation rather than continued
+        guessing; fix verified against a synthetic repro shaped exactly
+        like the real Marathon 2 top level (`Demos`/`"Physics
+        Models"`/`Plugins`/`Scripts` alongside the four canonical files) —
+        `have_default_files()` now correctly passes and the engine
+        proceeds normally.
 - [ ] **M5 — Audio**
 - [ ] **M6 — Save games / prefs persistence**
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)
