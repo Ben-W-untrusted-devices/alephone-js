@@ -75,6 +75,13 @@
         const result = await mountUploadedFiles(Module.FS, currentFiles, "/data");
         log(`Mounted ${result.mountedCount} file(s) (${result.skippedCount} skipped).`);
 
+        // Diagnostic: show exactly what ended up at the top of /data -- the
+        // engine looks up Map/Shapes/Images/Sounds by exact name there (see
+        // WEB_PORT_PLAN.md, M4a), so this is the fastest way to see whether
+        // mountUploadedFiles placed things where it expects.
+        const topLevel = Module.FS.readdir("/data").filter((n) => n !== "." && n !== "..");
+        log(`/data top level: ${topLevel.join(", ")}`);
+
         log("Starting main()...");
         Module.callMain(["/data"]);
       } catch (err) {
