@@ -357,8 +357,9 @@ here is implicit, not explicit permission to redistribute.
     code and whatever SharedArrayBuffer/cross-origin-isolation deployment
     headers that ends up needing.
   - **The working `emconfigure` recipe, end to end** (from a clean
-    `build-wasm/` dir, after `source ../../emsdk/emsdk_env.sh` and
-    `sh ../vcpkg/install-wasm32-emscripten.sh`):
+    `build-wasm/` dir, after `source ../../emsdk/emsdk_env.sh`,
+    `sh ../vcpkg/install-wasm32-emscripten.sh`, and — see M4d —
+    `sh ../vcpkg/install-wasm32-emscripten-exc.sh`):
     ```
     emconfigure ../configure --with-boost=/opt/homebrew \
       --without-zzip --without-vpx --without-matroska --without-ebml \
@@ -371,9 +372,14 @@ here is implicit, not explicit permission to redistribute.
     Notably **no `-pthread` and no `-L/opt/homebrew/lib`** — both were
     needed transiently while debugging (see above) but neither belongs in
     the real recipe. `-I/opt/homebrew/include` is still needed (Boost/asio
-    headers only, native `brew install boost asio`, never linked). Produces
-    `build-wasm/Source_Files/alephone.wasm` — confirmed a real WebAssembly
-    binary via `file`. No rendering yet (`Not found: OpenGL rendering`).
+    headers only, native `brew install boost asio`, never linked). As of
+    M4d, `-fwasm-exceptions -sSUPPORT_LONGJMP=wasm` no longer needs to be
+    passed manually either — `configure.ac` adds it automatically for the
+    Emscripten target (see M4d in Findings below for why, and for two real
+    gotchas worth knowing about before hand-editing `configure.ac` or
+    `CXXFLAGS` again). Produces `build-wasm/Source_Files/alephone.wasm` —
+    confirmed a real WebAssembly binary via `file`. No rendering yet
+    (`Not found: OpenGL rendering`).
   - **Verified it actually runs, not just links (M3c).** The default
     `emmake` target links to a bare `alephone`/`alephone.wasm` with no
     `.html`/`.js` glue (Emscripten defaults to a Node-runnable script
@@ -736,12 +742,78 @@ here is implicit, not explicit permission to redistribute.
     "just don't hit code paths that throw" isn't a real long-term option
     — some real scenario data (evidently including plausible, ordinary
     plugin manifests with `map_patch`/`checksum` elements) will always hit
-    this. Left as an explicit, not-yet-started follow-up rather than
-    patched over, given both attempted fixes need more work than fits
-    here: either recompiling this project's own object files to properly
-    pair with `-sDISABLE_EXCEPTION_CATCHING=0`'s exception-aware runtime,
-    or extending the `-fwasm-exceptions` route through
-    `install-wasm32-emscripten.sh`'s vcpkg dependencies and Lua.
+    this.
+  - **Resolved: went with modern WASM-native exceptions
+    (`-fwasm-exceptions`/`-sSUPPORT_LONGJMP=wasm`), not the legacy JS-based
+    route.** Asked the user directly given both fixes were genuinely
+    blocked and involved real tradeoffs (see the pros/cons above) rather
+    than picking unilaterally; the user chose the modern route knowing it
+    needed vcpkg dependency work.
+    - **`Lua/liba1lua.a(ldo.o)`'s `emscripten_longjmp` turned out to need
+      one more flag, not vcpkg work**: `-fwasm-exceptions` alone only
+      covers C++ exception codegen; plain-C `setjmp`/`longjmp` (which
+      Lua's `ldo.o` uses for its own error handling) needs the *separate*
+      `-sSUPPORT_LONGJMP=wasm` setting to match. Adding it to
+      `CFLAGS`/`CXXFLAGS` resolved Lua on its own, with zero vcpkg
+      changes — narrowing the real remaining problem to just
+      `libfreetype.a`/`libpng16.a` (vcpkg-prebuilt, pulled in transitively
+      by `sdl2-ttf`; nothing else in the dependency graph uses
+      `setjmp`/`longjmp`/C++ exceptions internally, so nothing else needed
+      touching).
+    - **Added a custom vcpkg triplet**,
+      [vcpkg/custom-triplets/wasm32-emscripten-exc.cmake](vcpkg/custom-triplets/wasm32-emscripten-exc.cmake)
+      — identical to vcpkg's own community `wasm32-emscripten` triplet,
+      plus `VCPKG_C_FLAGS`/`VCPKG_CXX_FLAGS` set to the same two flags —
+      and [vcpkg/install-wasm32-emscripten-exc.sh](vcpkg/install-wasm32-emscripten-exc.sh),
+      which builds just `freetype`+`libpng` under it (into a separate
+      `installed-wasm32-emscripten-exc/` root, gitignored like the other
+      `installed-*` dirs) and copies the resulting `.a` files **over** the
+      incompatible ones already installed under the plain
+      `wasm32-emscripten` triplet. Nothing else (`sdl2`, `sdl2-ttf`
+      itself, `openal-soft`, `libsndfile`) needed rebuilding — static
+      libraries don't bake in their dependencies' code, so swapping just
+      the two `.a` files this way is enough; run this script *after*
+      `install-wasm32-emscripten.sh`.
+    - **Made `configure.ac` add both flags automatically for the
+      Emscripten target** (appended to `CXXFLAGS`/`CFLAGS`, not assigned —
+      see the comment in `configure.ac` right after the `ax_target_emscripten`
+      check), rather than requiring every future `emconfigure` invocation
+      to remember to pass them by hand. This turned out to matter for a
+      real reason, not just tidiness (see the next two findings).
+    - **Real gotcha #1 — a naive `CXXFLAGS="-fwasm-exceptions
+      -sSUPPORT_LONGJMP=wasm"` *assignment* (not append) during manual
+      testing silently dropped the project's usual `-g -O2`**: autoconf
+      only supplies its own `-g -O2` default when `CXXFLAGS` is *unset* in
+      the environment; setting it to anything at all — even just to add
+      one flag — replaces the default outright, autoconf does not merge
+      the two. Symptom was subtle and easy to misattribute: the resulting
+      `alephone.wasm` was suspiciously *smaller* (48MB → ~9.75MB, no
+      debug info) and *ran*, but crashed differently — `memory access out
+      of bounds` / `Stack overflow detected. You can try increasing
+      -sSTACK_SIZE (currently set to 65536)` — from unoptimized code's
+      much larger per-call stack frames blowing the default 64KB stack
+      during boost property_tree's recursive XML parsing. Fixed by
+      appending (`CXXFLAGS="$CXXFLAGS ..."`) instead of assigning, both in
+      the final `configure.ac` change and in manual testing from then on.
+    - **Real gotcha #2 — editing `configure.ac` doesn't do anything by
+      itself**: `configure.ac` is a template; the actual `configure` shell
+      script `emconfigure` runs is a *generated* file (gitignored, not
+      tracked) that only gets regenerated by running `autoreconf -i` (or
+      `autoconf`) again. Spent one full reconfigure+rebuild+test cycle not
+      noticing this — the edited `configure.ac` silently had zero effect
+      until `autoreconf -i` was run. Worth remembering for any future
+      `configure.ac` edit, not just this one.
+    - **Verified end-to-end, twice** (once with the flags passed
+      manually, again after moving them into `configure.ac` and
+      confirming a plain, undecorated `emconfigure` invocation now
+      produces `CXXFLAGS: -g -O2 -fwasm-exceptions -sSUPPORT_LONGJMP=wasm`
+      on its own): the exact synthetic-plugin repro that previously
+      aborted with `Exception thrown, but exception catching is not
+      enabled` now runs `callMain` to completion with no error, no crash,
+      and the tab stays fully responsive (screenshot succeeds
+      immediately) — confirmed via a from-scratch clean rebuild (all
+      `.o`/`.a` deleted first, per the lesson from M4c-i) to rule out any
+      stale-object contamination from the earlier failed attempts.
 
 ## Milestones / Task list
 
@@ -826,19 +898,20 @@ here is implicit, not explicit permission to redistribute.
         `dialog::run()`'s own `yield()` is a genuine no-op on this
         single-threaded build — see Findings for why that one test isn't
         evidence this is generally safe. Not started.
-- [ ] **M4d — Enable real C++ exception catching.** Real scenario data
+- [x] **M4d — Enable real C++ exception catching.** Real scenario data
       (confirmed via a synthetic repro of a plugin manifest, not real
       Marathon 2 content) throws during `Plugins.cpp`'s XML/property_tree
       parsing, and Emscripten's default build has no exception-catching
       support linked in at all, so any throw anywhere is a hard abort —
       not specific to plugins, just the first place real data reaches it.
-      Two approaches investigated, both blocked on real complications (see
-      Findings): legacy JS-based catching links but produces a runtime
-      `null function` error; modern `-fwasm-exceptions` needs vcpkg's
-      `libfreetype`/`libpng` (and this project's bundled Lua) rebuilt with
-      a matching `setjmp`/`longjmp` model too. Not started; reverted to a
-      clean, working (but exception-unsafe) baseline rather than ship
-      either half-fix.
+      Resolved with modern WASM-native exceptions (user's explicit choice
+      over the legacy JS-based route — see Findings for the pros/cons and
+      why): `configure.ac` now adds `-fwasm-exceptions
+      -sSUPPORT_LONGJMP=wasm` automatically for the Emscripten target, and
+      a new custom vcpkg triplet + install script rebuild just
+      `freetype`/`libpng` (the only dependencies needing it) to match.
+      Verified end-to-end, twice, including a from-scratch clean rebuild:
+      the exact repro that used to abort now runs cleanly.
 - [ ] **M5 — Audio**
 - [ ] **M6 — Save games / prefs persistence**
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)
@@ -899,4 +972,20 @@ and the engine shut down cleanly. **Not yet done: `dialog::run()` itself
 to work in manual testing, but its `yield()` is a genuine no-op on this
 build, so that isn't evidence the general case is safe (see Findings).
 
-M4b (IDBFS persistence) and M3b-iv (OpenGL) both remain not-yet-started.
+**A user-run test with real Marathon 2 data (M4a/M4c-i's fixes applied)
+found the next real blocker: real scenario data throws a C++ exception
+during plugin manifest parsing, and Emscripten's default build has no
+exception-catching support linked in at all — any throw anywhere is a
+hard abort.** Root-caused without touching the real data (a synthetic
+plugin manifest using Aleph One's own public schema reproduced it
+exactly). **Now resolved (M4d)**: `configure.ac` adds
+`-fwasm-exceptions -sSUPPORT_LONGJMP=wasm` automatically for the
+Emscripten target (the user's explicit choice over the legacy JS-based
+route, after weighing real tradeoffs — see Findings), and a new custom
+vcpkg triplet rebuilds just `freetype`/`libpng` (the only dependencies
+that needed it) to match. Verified end-to-end, twice, including a
+from-scratch clean rebuild: the exact repro that used to abort now runs
+`callMain` to completion with no error and a fully responsive tab.
+
+M4b (IDBFS persistence), M4c-ii (`dialog::run()`'s own blocking loop —
+see above), and M3b-iv (OpenGL) all remain not-yet-started.

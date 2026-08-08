@@ -115,6 +115,29 @@ AC_COMPILE_IFELSE(
   [ax_target_emscripten=no])
 AC_MSG_RESULT([$ax_target_emscripten])
 
+dnl Web port (see WEB_PORT_PLAN.md, M4d): this codebase relies on real,
+dnl working C++ exception handling throughout (not just one call site --
+dnl main.cpp's own main() wraps everything in catch (std::exception&)/catch
+dnl (...), expecting it to actually work), but Emscripten disables exception
+dnl *catching* by default -- any throw anywhere is a hard abort regardless
+dnl of source-level try/catch, confirmed by a real scenario data file
+dnl throwing during XML/property_tree parsing. -fwasm-exceptions is
+dnl Emscripten's modern, native (non-JS-emulated) exception model;
+dnl -sSUPPORT_LONGJMP=wasm matches it for plain C setjmp/longjmp users (this
+dnl project's bundled Lua, and transitively freetype/libpng). Appended
+dnl (not assigned) so this doesn't clobber the "-g -O2" CXXFLAGS/CFLAGS
+dnl default -- autoconf only applies that default when the variable is
+dnl unset, so a naive assignment here would silently build unoptimized,
+dnl which is exactly what happened once already (huge, unexpectedly small
+dnl .wasm output and a stack overflow from oversized unoptimized stack
+dnl frames). freetype/libpng need separately rebuilding to match -- see
+dnl vcpkg/custom-triplets/wasm32-emscripten-exc.cmake and
+dnl vcpkg/install-wasm32-emscripten-exc.sh.
+AS_IF([test "x$ax_target_emscripten" = "xyes"],
+      [ CXXFLAGS="$CXXFLAGS -fwasm-exceptions -sSUPPORT_LONGJMP=wasm"
+        CFLAGS="$CFLAGS -fwasm-exceptions -sSUPPORT_LONGJMP=wasm"
+      ])
+
 dnl Web port (see WEB_PORT_PLAN.md, M3): a browser has no raw TCP/UDP socket
 dnl API at all (only WebSocket/WebRTC, which the existing asio-based
 dnl NetworkInterface doesn't speak and no peer -- native client, dedicated
