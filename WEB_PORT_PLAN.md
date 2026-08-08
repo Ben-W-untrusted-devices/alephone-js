@@ -632,6 +632,39 @@ here is implicit, not explicit permission to redistribute.
     `handle_preferences()` from "call a function, block, get a result,
     keep going" into an explicit trigger-and-resume-next-frame shape — as
     a real, separate follow-up task, not yet started.
+  - **First real-scenario-data test (by the user, with their own local copy
+    of Marathon 2 — never touched by this session, per the hard rule)
+    aborted right after the startup banner: `Aborted(). Build with
+    -sASSERTIONS for more info.`** Root cause suspected before confirming:
+    `build-engine.sh` never set `-sALLOW_MEMORY_GROWTH`, so the WASM heap
+    was a fixed size decided at link time — real Marathon 2 data is ~48MB
+    across just `Map.sceA`/`Shapes.shpA`/`Sounds.sndA`/`Images.imgA` (the
+    144-file mount count the user reported also includes `Plugins/`,
+    `Scripts/`, `Physics Models/`, `Demos/`), which a small default heap
+    has no chance of holding once parsed into the engine's own structures.
+    Added `-sALLOW_MEMORY_GROWTH=1` (the fix) and `-sASSERTIONS=1`
+    (diagnostic — turns Emscripten's generic "Aborted()" into a specific
+    reason) to `build-engine.sh` and rebuilt.
+  - **Attempting to verify this by simulating the real data's size (never
+    its content) surfaced a second, genuinely different bug: zero-filled
+    placeholder bytes at the same sizes hang the tab outright** — even a
+    trivial `1+1` eval never returned, confirming a real main-thread
+    deadlock, not a display glitch. This is almost certainly the map/WAD
+    parser looping on structurally-invalid header data (an all-zeros
+    buffer is not a valid WAD, unlike a real `Map.sceA`), not the same bug
+    the user hit (a clean `Aborted()`, not a hang) — so this specific
+    repro is a false lead for *that* bug, but it's a real, separate
+    robustness gap worth noting: malformed/corrupt scenario data can hang
+    the tab under Emscripten (unrecoverable without reloading), where
+    native Aleph One would at worst error out or the user could force-quit.
+    Not root-caused or fixed — parked here rather than chased further,
+    since it needs either a deliberately-crafted malformed-but-parseable
+    WAD (real reverse-engineering effort) or, more practically, just
+    seeing whether it recurs with real data once the memory fix is in.
+    **Next step is on the user**: retry with the real Marathon 2 folder
+    now that `-sALLOW_MEMORY_GROWTH`/`-sASSERTIONS` are in the rebuilt
+    engine — if it still aborts, the message should now name the actual
+    failure instead of a bare `Aborted()`.
 
 ## Milestones / Task list
 

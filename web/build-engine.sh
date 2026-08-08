@@ -1,7 +1,7 @@
 #!/bin/bash
 # Builds the Emscripten engine and produces a browser-loadable
 # alephone.js/.wasm pair (an ES module, MODULARIZE'd, with FS/callMain
-# exported) into web/public/engine/. See WEB_PORT_PLAN.md, M4.
+# exported) into web/engine/. See WEB_PORT_PLAN.md, M4.
 #
 # Assumes build-wasm/ has already been configured via emconfigure (see
 # WEB_PORT_PLAN.md for the recipe) -- this script only builds and relinks.
@@ -59,6 +59,7 @@ echo "Relinking for the browser into $OUT_DIR/alephone.js..."
     -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createAlephOneModule \
     -sEXPORTED_RUNTIME_METHODS=FS,callMain \
     -sFORCE_FILESYSTEM=1 -sINVOKE_RUN=0 -sENVIRONMENT=web \
+    -sALLOW_MEMORY_GROWTH=1 -sASSERTIONS=1 \
     -o "$OUT_DIR/alephone.js"
 )
 
