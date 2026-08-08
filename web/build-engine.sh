@@ -55,11 +55,15 @@ mkdir -p "$OUT_DIR"
 echo "Relinking for the browser into $OUT_DIR/alephone.js..."
 (
   cd "$BUILD_DIR/Source_Files"
+  # STACK_SIZE: Emscripten's default (64KB) is too small for real scenario
+  # data (Plugins/Scripts XML parsing especially) -- see WEB_PORT_PLAN.md,
+  # M4d. 4MB is a generous, standard-order-of-magnitude bump (matches
+  # typical native OS thread stack defaults), not a tuned minimum.
   eval "$LINK_CMD" \
     -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createAlephOneModule \
     -sEXPORTED_RUNTIME_METHODS=FS,callMain \
     -sFORCE_FILESYSTEM=1 -sINVOKE_RUN=0 -sENVIRONMENT=web \
-    -sALLOW_MEMORY_GROWTH=1 -sASSERTIONS=1 \
+    -sALLOW_MEMORY_GROWTH=1 -sASSERTIONS=1 -sSTACK_SIZE=4MB \
     -o "$OUT_DIR/alephone.js"
 )
 

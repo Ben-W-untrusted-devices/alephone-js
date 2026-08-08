@@ -814,6 +814,21 @@ here is implicit, not explicit permission to redistribute.
       immediately) — confirmed via a from-scratch clean rebuild (all
       `.o`/`.a` deleted first, per the lesson from M4c-i) to rule out any
       stale-object contamination from the earlier failed attempts.
+  - **A user retry with real Marathon 2 data hit a second, different real
+    abort: `Stack overflow! Stack cookie has been overwritten...`** —
+    Emscripten's default WASM stack (`-sSTACK_SIZE`, 64KB) is small even
+    by WASM standards, and the minimal one-element synthetic plugin repro
+    above never exercised enough recursion depth (through boost
+    property_tree's parser, or Lua/XML script loading) to hit it. Added
+    `-sSTACK_SIZE=4MB` to `web/build-engine.sh` (link-time only, no
+    recompile needed) — a generous, standard-order-of-magnitude bump
+    (roughly matching typical native OS thread stack defaults), not a
+    tuned minimum. Verified against a deliberately heavier synthetic
+    repro this time (5 plugin manifests × 20 nested `map_patch`/
+    `resource`/`mml` entries each, still Aleph One's own public schema,
+    still no real Marathon 2 content) — no crash, no abort, tab stayed
+    responsive, and the engine correctly reached its own "please install
+    the files" check (since the dummy content still isn't a real WAD).
 
 ## Milestones / Task list
 
