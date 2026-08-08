@@ -58,6 +58,15 @@ int main(int argc, char** argv)
 		main_event_loop();
 	}
 	catch (std::exception& e) {
+#ifdef __EMSCRIPTEN__
+		// Web port (see ../WEB_PORT_PLAN.md, M4f): logFatal() below writes
+		// through Logging.cpp's TopLevelLogger, which silently drops every
+		// message if its log file never successfully opened (no fallback to
+		// stderr) -- plausible on this target, and if so, this is the one
+		// place an otherwise-invisible top-level exception's actual message
+		// can still reach the browser console.
+		fprintf(stderr, "[fatal] Unhandled exception: %s\n", e.what());
+#endif
 		try
 		{
 			logFatal("Unhandled exception: %s", e.what());
@@ -68,6 +77,9 @@ int main(int argc, char** argv)
 		code = 1;
 	}
 	catch (...) {
+#ifdef __EMSCRIPTEN__
+		fprintf(stderr, "[fatal] Unknown exception\n");
+#endif
 		try
 		{
 			logFatal("Unknown exception");
