@@ -1083,14 +1083,17 @@ here is implicit, not explicit permission to redistribute.
         story and the harness's safety design.
 - [ ] **M4h — real browser milestone: title screen and main menu genuinely
       render against real Marathon 2 data (user-confirmed) — but no menu
-      item responds to clicks.** Two candidate causes investigated so far,
-      one ruled out, one fixed but unconfirmed:
+      item responds to clicks, and Safari's Web Inspector is completely
+      unusable for this tab (blank window, not even Safari's own widgets).**
+      Two bugs, still both unresolved:
   - [x] Ruled out: the engine's default real-fullscreen request (the
-        Fullscreen API) as the cause of dead clicks — it *was* the cause
-        of dev tools becoming completely inaccessible in Safari (blank
-        window), fixed by passing `--windowed` in `game.html`. Confirmed
-        by the user that switching to windowed didn't fix the click issue
-        on its own, so these are two separate problems, not one.
+        Fullscreen API) as the sole/shared cause of both bugs. `--windowed`
+        was added to `game.html` on the hypothesis that it explained the
+        dev-tools problem specifically — **the user confirmed this is
+        wrong**: dev tools are still a blank window in windowed mode, not
+        just fullscreen. Also confirmed separately that windowed mode alone
+        doesn't fix dead clicks either. So fullscreen is not the cause of
+        either bug; both remain open with no confirmed root cause.
   - [ ] Suspected, fixed, **not yet user-confirmed**: `game.html`'s
         `#canvas` CSS hardcoded a `640x480` *display* size, independent of
         whatever internal resolution the engine sets on the canvas
@@ -1105,6 +1108,17 @@ here is implicit, not explicit permission to redistribute.
         without real Map/Shapes/Images content actually rendering a real,
         interactive menu — synthetic placeholder data never gets far
         enough to test this).
+  - [x] Since Safari dev tools can't be used to diagnose either bug
+        directly, made `game.html` self-diagnosing instead: `window`
+        `error`/`unhandledrejection` listeners, a 3s heartbeat log (to
+        distinguish a genuine JS-thread hang from an input-handling-only
+        problem), and raw canvas `mousedown`/`mouseup`/`click` logging
+        (client coords, canvas bounding rect, canvas width/height
+        attributes) — all written to the page's own visible `#log` panel.
+        Verified working in the Browser pane (heartbeat logs continuously;
+        a canvas click correctly logs coords/rect/attrs). Still needs a
+        real-browser retest by the user against real data to see what it
+        reports for the actual dead-click/dev-tools bugs.
 - [ ] **M5 — Audio**
 - [ ] **M6 — Save games / prefs persistence**
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)
@@ -1204,8 +1218,18 @@ actual window/screen creation, where it hits Node's expected "no DOM"
 limitation (`document is not defined`) rather than any remaining bug in
 this code.
 
+**A real-browser retry (not Node) confirmed the biggest milestone yet
+(M4h): against the real, unmodified Marathon 2 data, the engine now renders
+an actual title screen and reaches the main menu.** Two new bugs surfaced
+at that point, both still open: no menu item responds to clicks (in both
+fullscreen and windowed mode), and Safari's Web Inspector is a blank,
+unusable window for this tab (also in both modes). A fullscreen-transition
+hypothesis was tried for both and ruled out for both by direct user
+testing. Since Safari dev tools can't be used at all here, `game.html` was
+made self-diagnosing instead (window error/rejection listeners, a
+heartbeat, and raw canvas input-event logging, all written to the page's
+own visible log panel) — verified working, but not yet retested by the
+user against real data to see what it actually reports.
+
 M4b (IDBFS persistence), M4c-ii (`dialog::run()`'s own blocking loop —
-see above), and M3b-iv (OpenGL) all remain not-yet-started. The next
-real-browser retry (not Node) is the natural next step — nothing in this
-session's testing has gotten further than the point Node's own DOM
-limitation now marks.
+see above), and M3b-iv (OpenGL) all remain not-yet-started.
