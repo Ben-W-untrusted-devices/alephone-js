@@ -1116,9 +1116,49 @@ here is implicit, not explicit permission to redistribute.
         (client coords, canvas bounding rect, canvas width/height
         attributes) — all written to the page's own visible `#log` panel.
         Verified working in the Browser pane (heartbeat logs continuously;
-        a canvas click correctly logs coords/rect/attrs). Still needs a
-        real-browser retest by the user against real data to see what it
-        reports for the actual dead-click/dev-tools bugs.
+        a canvas click correctly logs coords/rect/attrs).
+  - [x] **Root cause of the dead-click bug found, via the self-diagnostic
+        heartbeat**: the user reported the heartbeat stops *permanently*
+        (never resumes) the moment a menu button is pressed — a genuine
+        main-thread hang, not just an ignored click. `handle_interface_menu_screen_click()`
+        (`Source_Files/Misc/interface.cpp`) tracked a button press with its
+        own classic Mac-era blocking loop: `while (mouse_down) { SDL_PollEvent(...); ...; SDL_Delay(10); }`,
+        which polls for the matching `SDL_MOUSEBUTTONUP` itself instead of
+        returning control to the caller. `main_event_loop()` was converted
+        to cooperative `emscripten_set_main_loop` back in M4c-i, but this is
+        a *second*, independent blocking loop one level down the call
+        stack, at the exact point a menu button is pressed — on
+        Emscripten's single-threaded, non-Asyncify build it never yields
+        back to the browser's JS event loop at all, so the whole tab hangs
+        for good (matches the observed permanent heartbeat stop, and the
+        reported "laggy scrollbar," a symptom of a pinned main thread).
+        This is the *actual* mechanism behind "menu renders, but no click
+        does anything" — not a coordinate-mapping bug (the M4h canvas-CSS
+        fix above may still be independently correct/needed, but isn't the
+        cause of this specific hang).
+  - [x] **Fixed**: converted `handle_interface_menu_screen_click()`'s
+        blocking loop into non-blocking tracking state (`interface.cpp`),
+        driven by three new hooks (`update_menu_click_tracking_motion`,
+        `update_menu_click_tracking_idle`, `finish_menu_click_tracking`,
+        declared in `interface.h`) called from `shell.cpp`'s normal
+        per-frame event dispatch: `SDL_MOUSEMOTION` and a new
+        `SDL_MOUSEBUTTONUP` case in `process_event()`, plus a per-frame idle
+        hook in `main_event_loop_iteration()` for the loop's old
+        redraw-while-not-moving behavior. Same visual behavior (button
+        depresses on press, tracks hover during the drag, fires the command
+        on release inside the button), just spread across the existing
+        cooperative per-frame callbacks instead of a second nested blocking
+        loop. Rebuilt clean (`web/build-engine.sh`) and confirmed
+        `interface.cpp`/`shell.cpp` compile without errors; a smoke-load of
+        `game.html` in the Browser pane shows no console errors. **Not yet
+        user-confirmed against real data** — Node can't reach this code
+        path (no DOM), and browser automation can't drive the real file
+        picker needed to load real Marathon 2 data, so only the user's own
+        browser can actually exercise a real menu click.
+        There's a second, still-unconverted instance of this same pattern
+        (`while` + `SDL_Delay(30)`) in `Source_Files/Misc/ScenarioChooser.cpp:267`
+        — not reachable from the main menu, so out of scope for this fix,
+        but worth the same treatment whenever that screen is reached.
 - [ ] **M5 — Audio**
 - [ ] **M6 — Save games / prefs persistence**
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)

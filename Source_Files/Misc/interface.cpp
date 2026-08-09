@@ -3148,6 +3148,87 @@ static bool point_in_rectangle(
 	return in_rectangle;
 }
 
+// Web port (see ../../WEB_PORT_PLAN.md, M4h): handle_interface_menu_screen_click
+// used to track a button press with its own blocking while(mouse_down) loop
+// (polling SDL_PollEvent + SDL_Delay(10) until mouseup) -- classic Mac-era UI
+// code. On Emscripten's single-threaded, non-Asyncify build this never
+// returns control to the browser's own event/timer loop, so pressing any
+// menu button permanently hung the tab (confirmed via game.html's
+// self-diagnostic heartbeat, which stopped for good the moment a button was
+// pressed and never resumed). Converted to non-blocking tracking state,
+// updated from shell.cpp's normal per-frame event dispatch (already
+// cooperative since M4c-i's main_event_loop conversion) instead of its own
+// loop -- same visual behavior (depress/undepress on hover during the drag,
+// fire the command on release inside the button), just spread across
+// separate calls instead of one blocking one.
+namespace {
+	struct MenuClickTrackingState {
+		bool active = false;
+		short index = 0;
+		screen_rectangle *screen_rect = nullptr;
+		short xoffset = 0, yoffset = 0;
+		bool last_state = true;
+		bool cheatkeys_down = false;
+	};
+	MenuClickTrackingState menu_click_tracking;
+}
+
+bool menu_click_tracking_active(void)
+{
+	return menu_click_tracking.active;
+}
+
+void update_menu_click_tracking_motion(int mx, int my)
+{
+	if (!menu_click_tracking.active)
+		return;
+
+	alephone::Screen::instance()->window_to_screen(mx, my);
+	bool state = point_in_rectangle(mx - menu_click_tracking.xoffset, my - menu_click_tracking.yoffset, menu_click_tracking.screen_rect);
+	if (state != menu_click_tracking.last_state)
+	{
+		draw_button(menu_click_tracking.index, state);
+		draw_intro_screen();
+		menu_click_tracking.last_state = state;
+	}
+}
+
+void update_menu_click_tracking_idle(void)
+{
+	if (!menu_click_tracking.active)
+		return;
+
+	static uint64_t last_redraw = 0;
+	if (machine_tick_count() > last_redraw + TICKS_PER_SECOND / 30)
+	{
+		draw_intro_screen();
+		last_redraw = machine_tick_count();
+	}
+}
+
+void finish_menu_click_tracking(int mx, int my)
+{
+	if (!menu_click_tracking.active)
+		return;
+
+	alephone::Screen::instance()->window_to_screen(mx, my);
+	menu_click_tracking.last_state = point_in_rectangle(mx - menu_click_tracking.xoffset, my - menu_click_tracking.yoffset, menu_click_tracking.screen_rect);
+
+	short index = menu_click_tracking.index;
+	bool last_state = menu_click_tracking.last_state;
+	bool cheatkeys_down = menu_click_tracking.cheatkeys_down;
+	menu_click_tracking.active = false;
+
+	/* Draw it unpressed.. */
+	draw_button(index, false);
+	draw_intro_screen();
+
+	if (last_state)
+	{
+		do_menu_item_command(mInterface, index-START_OF_MENU_INTERFACE_RECTS+1, cheatkeys_down);
+	}
+}
+
 static void handle_interface_menu_screen_click(
 	short x,
 	short y,
@@ -3164,80 +3245,27 @@ static void handle_interface_menu_screen_click(
 		if (point_in_rectangle(x - xoffset, y - yoffset, screen_rect))
 			break;
 	}
-	
+
 	/* we found one.. */
 	if(index!=END_OF_MENU_INTERFACE_RECTS)
 	{
 		if(enabled_item(index-START_OF_MENU_INTERFACE_RECTS+1))
 		{
-			bool last_state= true;
+			screen_rect= get_interface_rectangle(index);
+
+			menu_click_tracking.active = true;
+			menu_click_tracking.index = index;
+			menu_click_tracking.screen_rect = screen_rect;
+			menu_click_tracking.xoffset = xoffset;
+			menu_click_tracking.yoffset = yoffset;
+			menu_click_tracking.last_state = true;
+			menu_click_tracking.cheatkeys_down = cheatkeys_down;
 
 			stop_interface_fade();
 
-			screen_rect= get_interface_rectangle(index);
-
 			/* Draw it initially depressed.. */
-			draw_button(index, last_state);
+			draw_button(index, true);
 			draw_intro_screen();
-		
-			bool mouse_down = true;
-			while (mouse_down)
-			{
-				int mx = x, my = y;
-				bool mouse_changed = false;
-				
-				SDL_Event e;
-				if (SDL_PollEvent(&e))
-				{
-					switch (e.type)
-					{
-						case SDL_MOUSEBUTTONUP:
-							mx = e.button.x;
-							my = e.button.y;
-							mouse_changed = true;
-							mouse_down = false;
-							break;
-						case SDL_MOUSEMOTION:
-							mx = e.motion.x;
-							my = e.motion.y;
-							mouse_changed = true;
-							break;
-					}
-				}
-				else
-				{
-					SDL_Delay(10);
-				}
-				if (mouse_changed)
-				{
-					alephone::Screen::instance()->window_to_screen(mx, my);
-					bool state = point_in_rectangle(mx - xoffset, my - yoffset, screen_rect);
-					if (state != last_state)
-					{
-						draw_button(index, state);
-						draw_intro_screen();
-						last_state = state;
-					}
-				}
-				else
-				{
-					static uint64_t last_redraw = 0;
-					if (machine_tick_count() > last_redraw + TICKS_PER_SECOND / 30)
-					{
-						draw_intro_screen();
-						last_redraw = machine_tick_count();
-					}
-				}
-			}
-
-			/* Draw it unpressed.. */
-			draw_button(index, false);
-			draw_intro_screen();
-			
-			if(last_state)
-			{
-				do_menu_item_command(mInterface, index-START_OF_MENU_INTERFACE_RECTS+1, cheatkeys_down);
-			}	
 		}
 	}
 }

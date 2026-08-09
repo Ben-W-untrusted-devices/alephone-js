@@ -804,6 +804,10 @@ static void main_event_loop_iteration(short game_state)
 
 	execute_timer_tasks(machine_tick_count());
 	idle_game_state(machine_tick_count());
+	// Web port (see ../../WEB_PORT_PLAN.md, M4h): drives the periodic
+	// redraw a menu-button press needs while the mouse isn't moving --
+	// see update_menu_click_tracking_idle()'s own comment in interface.cpp.
+	update_menu_click_tracking_idle();
 
 	auto fps_target = get_fps_target();
 	if (!get_keyboard_controller_status())
@@ -1404,6 +1408,10 @@ static void process_event(const SDL_Event &event)
 		{
 			mouse_moved(event.motion.xrel, event.motion.yrel);
 		}
+		else if (menu_click_tracking_active())
+		{
+			update_menu_click_tracking_motion(event.motion.x, event.motion.y);
+		}
 		break;
 	case SDL_MOUSEWHEEL:
 		if (get_game_state() == _game_in_progress)
@@ -1436,7 +1444,18 @@ static void process_event(const SDL_Event &event)
 		else
 			process_screen_click(event);
 		break;
-	
+
+	case SDL_MOUSEBUTTONUP:
+		// Web port (see ../../WEB_PORT_PLAN.md, M4h): completes a menu
+		// button press started by process_screen_click() above -- see
+		// finish_menu_click_tracking()'s own comment in interface.cpp.
+		if (menu_click_tracking_active())
+		{
+			int mx = event.button.x, my = event.button.y;
+			finish_menu_click_tracking(mx, my);
+		}
+		break;
+
 	case SDL_CONTROLLERBUTTONDOWN:
 		if (get_game_state() == _game_in_progress && !get_keyboard_controller_status())
 		{

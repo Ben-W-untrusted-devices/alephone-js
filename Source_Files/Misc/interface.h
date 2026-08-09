@@ -262,6 +262,15 @@ bool check_level_change(void);
 void pause_game(void);
 void resume_game(void);
 void portable_process_screen_click(short x, short y, bool cheatkeys_down);
+// Web port (see ../../WEB_PORT_PLAN.md, M4h): a menu-button press used to be
+// tracked by its own blocking while() loop inside interface.cpp, which
+// permanently hangs Emscripten's cooperative single-threaded build. It's
+// now non-blocking state, driven by these three hooks from shell.cpp's
+// normal per-frame event dispatch instead.
+bool menu_click_tracking_active(void);
+void update_menu_click_tracking_motion(int x, int y);
+void update_menu_click_tracking_idle(void);
+void finish_menu_click_tracking(int x, int y);
 void process_main_menu_highlight_advance(bool reverse);
 void process_main_menu_highlight_select(bool cheatkeys_down);
 void draw_menu_button_for_command(short index);
