@@ -265,11 +265,16 @@ void portable_process_screen_click(short x, short y, bool cheatkeys_down);
 // Web port (see ../../WEB_PORT_PLAN.md, M4h): a menu-button press used to be
 // tracked by its own blocking while() loop inside interface.cpp, which
 // permanently hangs Emscripten's cooperative single-threaded build. It's
-// now non-blocking state, driven by these three hooks from shell.cpp's
-// normal per-frame event dispatch instead.
+// now non-blocking state, driven by these hooks from shell.cpp's normal
+// per-frame event dispatch instead. No separate idle-redraw hook is needed:
+// update_game_window() (called unconditionally from shell.cpp's existing
+// per-frame redraw throttle, see main_event_loop_iteration) already redraws
+// the main menu ~30/sec regardless of tracking state -- an earlier version
+// of this added its own second, redundant ~30fps redraw loop here, which
+// raced the existing one on shared drawing buffers and hung the tab after a
+// few frames (confirmed in real-browser testing).
 bool menu_click_tracking_active(void);
 void update_menu_click_tracking_motion(int x, int y);
-void update_menu_click_tracking_idle(void);
 void finish_menu_click_tracking(int x, int y);
 void process_main_menu_highlight_advance(bool reverse);
 void process_main_menu_highlight_select(bool cheatkeys_down);

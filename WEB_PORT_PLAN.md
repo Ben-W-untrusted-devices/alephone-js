@@ -1138,27 +1138,154 @@ here is implicit, not explicit permission to redistribute.
         cause of this specific hang).
   - [x] **Fixed**: converted `handle_interface_menu_screen_click()`'s
         blocking loop into non-blocking tracking state (`interface.cpp`),
-        driven by three new hooks (`update_menu_click_tracking_motion`,
-        `update_menu_click_tracking_idle`, `finish_menu_click_tracking`,
-        declared in `interface.h`) called from `shell.cpp`'s normal
-        per-frame event dispatch: `SDL_MOUSEMOTION` and a new
-        `SDL_MOUSEBUTTONUP` case in `process_event()`, plus a per-frame idle
-        hook in `main_event_loop_iteration()` for the loop's old
-        redraw-while-not-moving behavior. Same visual behavior (button
-        depresses on press, tracks hover during the drag, fires the command
-        on release inside the button), just spread across the existing
-        cooperative per-frame callbacks instead of a second nested blocking
-        loop. Rebuilt clean (`web/build-engine.sh`) and confirmed
-        `interface.cpp`/`shell.cpp` compile without errors; a smoke-load of
-        `game.html` in the Browser pane shows no console errors. **Not yet
-        user-confirmed against real data** — Node can't reach this code
-        path (no DOM), and browser automation can't drive the real file
-        picker needed to load real Marathon 2 data, so only the user's own
-        browser can actually exercise a real menu click.
-        There's a second, still-unconverted instance of this same pattern
-        (`while` + `SDL_Delay(30)`) in `Source_Files/Misc/ScenarioChooser.cpp:267`
-        — not reachable from the main menu, so out of scope for this fix,
-        but worth the same treatment whenever that screen is reached.
+        driven by two new hooks (`update_menu_click_tracking_motion`,
+        `finish_menu_click_tracking`, declared in `interface.h`) called from
+        `shell.cpp`'s normal per-frame event dispatch: `SDL_MOUSEMOTION` and
+        a new `SDL_MOUSEBUTTONUP` case in `process_event()`. Same visual
+        behavior (button depresses on press, tracks hover during the drag,
+        fires the command on release inside the button), just spread across
+        the existing cooperative per-frame callbacks instead of a second
+        nested blocking loop. **User-confirmed real progress** (heartbeat no
+        longer dies the instant a button is pressed), but two further bugs
+        surfaced from there, both since found and fixed (see below):
+    - [x] **Bug 2, found and fixed**: an initial attempt added a third
+          hook, `update_menu_click_tracking_idle()`, to redraw at ~30fps
+          while a button is held but the mouse isn't moving (mirroring the
+          original loop's own idle-redraw branch). This turned out to be
+          **redundant with a pre-existing, already-there mechanism**:
+          `main_event_loop_iteration()`'s own per-frame redraw throttle
+          (bottom of the function) already calls `update_game_window()` ->
+          `update_interface_display()` unconditionally whenever
+          `game_state != _game_in_progress`, main-menu idle included,
+          totally independent of whether a click is being tracked. Running
+          both concurrently raced on shared drawing buffers and reliably
+          hung the tab after a handful of frames (visible in real-browser
+          testing as several `idle redraw` log lines with increasing tick
+          counts, then a hard freeze) — **removed the redundant hook
+          entirely**, relying solely on the pre-existing mechanism.
+    - [x] **Bug 3, found and fixed — the real remaining cause of the
+          immediate-click hang**: `main_event_loop_iteration()`'s own
+          `yield_time` branch calls `SDL_WaitEventTimeout(&event, 30)` for
+          `_display_main_menu` (and other idle-ish states) once
+          `interface_fade_finished()` is true — a genuine "block until the
+          next event or timeout" wait. That's cheap and safe on native (a
+          real OS thread can actually suspend and resume), but doing so
+          properly requires the runtime to suspend and later resume
+          execution — needs a real thread or Asyncify, and this build uses
+          WASM-native exceptions instead of Asyncify (M4d's tradeoff, made
+          for a different reason at the time). Bracketed every step of
+          `main_event_loop_iteration()` with tick-gated diagnostic prints
+          (removed again once done) and got a smoking gun from real-browser
+          testing: two full frames completed cleanly, then the third
+          `SDL_WaitEventTimeout` call never returned — it happened to find
+          an event already queued the first two times, then hung
+          permanently the first time it had to genuinely wait with nothing
+          pending. **Fixed** by unconditionally forcing `yield_time = false`
+          under `__EMSCRIPTEN__` right after it's computed — the
+          idle-power-saving it exists for doesn't apply to a browser tab
+          anyway (`requestAnimationFrame` already throttles the callback
+          rate), so it just falls through to the ordinary non-blocking
+          `SDL_PollEvent` drain instead.
+  - [x] **Headless Node.js reproduction, without any browser** — built
+        specifically after the user pointed out repeated round-trips
+        through their real (and, by this point, frequently Safari-hanging)
+        browser session were expensive, and asked directly whether this
+        could be tested in Node instead. It could, and turned out to be the
+        single most valuable tool for the rest of this investigation:
+      - Relinked the existing `build-wasm/` object files for
+        `-sENVIRONMENT=node` (reusing the same NODEFS-real-data harness from
+        M4g), with a **hand-written, minimal fake DOM** (`document`,
+        `canvas`, a `CanvasRenderingContext2D` stub with real-shaped
+        `ImageData` objects, `navigator.userActivation`, and
+        `document`/`window`-level `addEventListener` capture — Emscripten's
+        SDL2 backend resolves its event targets via a CSS-selector string
+        through `document.querySelector`, and attaches `mouseup`
+        specifically at the document level rather than the canvas, so a
+        drag ending off-canvas still registers) — enough for `SDL_Init`,
+        `SDL_CreateWindow`, and the software `SDL_RenderPresent` path to
+        succeed without throwing, entirely without a real browser.
+      - Once running, synthetic `mousedown`/`mouseup` events dispatched
+        directly to the captured listener functions (bypassing any real
+        DOM) drove the engine from title screen through to the main menu
+        and reproduced the exact `SDL_WaitEventTimeout` hang on demand,
+        confirming Bug 3 above with certainty before ever touching the
+        user's browser again.
+      - **Calibrating exact click coordinates against this fake DOM proved
+        unreliable** (a full grid sweep across the entire canvas never
+        landed inside a single real button rect — most likely something in
+        the crude 2D-context stub leaves `Screen::Initialize()`'s layout
+        state degraded) — so for testing dialog-opening code specifically,
+        added a tiny, clearly-marked, `__EMSCRIPTEN__`-only exported test
+        hook, `web_test_open_preferences()` (`extern "C" EMSCRIPTEN_KEEPALIVE`
+        in `interface.cpp`, calls `do_preferences()` directly), callable via
+        `Module.ccall()` from Node — sidestepping the whole SDL mouse-event/
+        coordinate pipeline entirely for this purpose. Kept in the source
+        (guarded, unreachable from any real code path) since it's directly
+        useful for continued headless testing of dialog-related bugs.
+  - [x] **Real cause of "Preferences still hangs" after the above three
+        fixes, confirmed via that direct `web_test_open_preferences()`
+        call**: `dialog::run()` (`Source_Files/Misc/sdl_dialogs.cpp`) has
+        its own, completely separate blocking `while (!done) { ...; yield(); }`
+        loop — the exact same category of bug as `main_event_loop()` before
+        M4c-i, just one level deeper in the call stack (reached via
+        `do_preferences()` -> `handle_preferences()` -> `d.run()`), and
+        explicitly flagged as out-of-scope deferred work back when M4c-i
+        landed (this is what "M4c-ii" has referred to ever since). Confirmed
+        by direct reproduction: calling `web_test_open_preferences()` in the
+        Node harness hung the whole process identically to the real-browser
+        lockup, with no coordinate guessing involved at all.
+  - [x] **M4c-ii, started (Preferences only) — `dialog::run()` converted to
+        run cooperatively.** Chose a manual, non-Asyncify rewrite (the
+        user's explicit choice over re-investigating Asyncify, given Asyncify
+        was already rejected once at M4d on cost grounds for a related but
+        different tradeoff):
+      - `dialog::run()`'s loop body extracted, unchanged, into a new public
+        method, `dialog::pump_once()` — returns `true` once the dialog is
+        ready to close. `run()` itself now just calls
+        `while (!pump_once()) yield();` — a pure extraction, no behavior
+        change, so native platforms are completely unaffected.
+      - New free functions (guarded `__EMSCRIPTEN__`, declared in
+        `sdl_dialogs.h`): `run_dialog_cooperatively(dialog*, on_finish
+        callback, intro_exit_sounds)` starts the dialog and registers it as
+        the single active cooperative dialog (mirrors `dialog::run()`'s own
+        one-at-a-time modal nesting via `top_dialog`); `update_cooperative_dialog()`
+        calls `pump_once()` once per browser frame and, once done, calls
+        `finish()` and fires the completion callback with the result —
+        replacing the synchronous `int result = d.run();` calling
+        convention entirely for converted call sites.
+      - Wired into `shell.cpp`'s `main_event_loop_iteration()`: when a
+        cooperative dialog is active, it gets *exclusive* per-frame pumping
+        (all the normal event/redraw handling is skipped for that frame)
+        rather than risk both consuming the same SDL events — matching real
+        modal-dialog semantics, where the screen underneath doesn't also
+        process clicks while a dialog is up.
+      - `handle_preferences()` (`preferences.cpp`) converted: a fully
+        separate `__EMSCRIPTEN__` implementation (native's version untouched
+        byte-for-byte in an `#else` branch, deliberately not sharing code
+        between them, per this fork's preference for leaving native
+        behavior provably unchanged) heap-allocates the dialog and replaces
+        `d.run(); display_main_menu();` with
+        `run_dialog_cooperatively(d, [d](int){ display_main_menu(); delete d; });`.
+      - **Verified end-to-end in the Node harness**: `web_test_open_preferences()`
+        now returns immediately (does not hang), and the engine keeps
+        running cleanly for 14+ further heartbeats afterward with the
+        dialog actively open and being pumped every frame. This is the
+        exact call that deterministically hung before this fix.
+      - **Explicitly out of scope for this pass**: every *other*
+        `dialog::run()` call site (~28, per M4c-i's original research) —
+        Load/Save, Quit-confirm, alerts, and critically the sub-dialogs
+        reachable *from inside* Preferences itself (PLAYER/GRAPHICS/SOUND/
+        CONTROLS/ENVIRONMENT/PLUGINS buttons each open their own nested
+        dialog via their own synchronous `d.run()`) — all still use the
+        blocking path and will still hang the tab if reached. Preferences'
+        own open/close round trip (via RETURN) is the one confirmed,
+        complete, working path; converting the rest is follow-up work,
+        applying the same now-proven pattern per call site.
+      - **Not yet confirmed in a real browser** — Node testing (via the
+        direct `ccall` hook) proves the open path doesn't hang and the
+        dialog stays alive across many frames, but never simulated an
+        actual RETURN-button click, so closing the dialog and returning to
+        the main menu is unverified outside of code review.
 - [ ] **M5 — Audio**
 - [ ] **M6 — Save games / prefs persistence**
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)
@@ -1261,15 +1388,49 @@ this code.
 **A real-browser retry (not Node) confirmed the biggest milestone yet
 (M4h): against the real, unmodified Marathon 2 data, the engine now renders
 an actual title screen and reaches the main menu.** Two new bugs surfaced
-at that point, both still open: no menu item responds to clicks (in both
-fullscreen and windowed mode), and Safari's Web Inspector is a blank,
-unusable window for this tab (also in both modes). A fullscreen-transition
+at that point: no menu item responded to clicks, and Safari's Web Inspector
+was a blank, unusable window for this tab. A fullscreen-transition
 hypothesis was tried for both and ruled out for both by direct user
 testing. Since Safari dev tools can't be used at all here, `game.html` was
 made self-diagnosing instead (window error/rejection listeners, a
-heartbeat, and raw canvas input-event logging, all written to the page's
-own visible log panel) — verified working, but not yet retested by the
-user against real data to see what it actually reports.
+heartbeat, and raw canvas input-event logging) — which then did exactly
+its job: real-browser testing showed the heartbeat itself dying the
+instant a menu button was pressed, i.e. a genuine main-thread hang, not
+merely an ignored click.
 
-M4b (IDBFS persistence), M4c-ii (`dialog::run()`'s own blocking loop —
-see above), and M3b-iv (OpenGL) all remain not-yet-started.
+**That kicked off a real debugging chain, root-caused via three more
+fixes and a new headless Node.js testing methodology, ending in a working
+Preferences dialog (M4h/M4c-ii)** — full details and code pointers in
+Findings above:
+1. `handle_interface_menu_screen_click()`'s own classic-Mac-era blocking
+   `while(mouse_down)` loop, never converted alongside `main_event_loop()`
+   at M4c-i — converted to non-blocking tracking state.
+2. A redundant, self-inflicted second per-frame redraw loop (added while
+   fixing #1) racing the engine's own pre-existing per-frame redraw
+   mechanism — removed.
+3. `main_event_loop_iteration()`'s own idle-power-saving `SDL_WaitEventTimeout`
+   call — a genuine blocking wait that can't safely resume without
+   Asyncify (not used in this build) — disabled for the Emscripten target.
+4. **Built a headless Node.js reproduction** (hand-written fake DOM/canvas/
+   2D-context, no real browser) specifically to stop spending the user's
+   increasingly Safari-hanging sessions on each round-trip — successfully
+   reproduced the exact hang on demand, then (once coordinate calibration
+   against the fake DOM proved unreliable) added a tiny exported test hook
+   to call `do_preferences()` directly via `Module.ccall()`, bypassing SDL
+   input entirely.
+5. That hook proved the *remaining* Preferences hang was `dialog::run()`'s
+   own separate blocking loop (`sdl_dialogs.cpp`) — the pre-existing,
+   already-known M4c-ii limitation flagged back at M4c-i. Converted it to
+   run cooperatively (`dialog::pump_once()` + `run_dialog_cooperatively()`
+   + `update_cooperative_dialog()`), and converted `handle_preferences()`
+   to use it. **Verified in Node**: the direct call now returns immediately
+   and the dialog stays alive, pumped every frame, with no hang.
+
+M4c-ii is **started, not finished** — only `handle_preferences()` uses the
+new cooperative mechanism; ~28 other `dialog::run()` call sites (Load/Save,
+Quit-confirm, alerts, and the sub-dialogs reachable *from inside*
+Preferences itself) still block and will still hang the tab if reached.
+Preferences' own open/close round trip is not yet confirmed in a real
+browser (Node testing never simulated clicking RETURN).
+
+M4b (IDBFS persistence) and M3b-iv (OpenGL) remain not-yet-started.

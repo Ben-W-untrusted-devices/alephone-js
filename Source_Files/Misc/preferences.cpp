@@ -221,6 +221,69 @@ static bool ethernet_active(void)
  *  Main preferences dialog
  */
 
+#ifdef __EMSCRIPTEN__
+// Web port (see ../../WEB_PORT_PLAN.md, M4c-ii): identical to the native
+// handle_preferences() below, except the dialog is heap-allocated and run
+// via run_dialog_cooperatively() instead of the stack-allocated dialog's
+// blocking d.run() -- see that function's comment in sdl_dialogs.cpp for
+// why. Kept as a fully separate function (rather than sharing the widget-
+// construction code via ifdef'd fragments) so the native path stays exactly
+// as it was. This is the one dialog confirmed hanging in real-browser
+// testing (reachable directly from the main menu); every other dialog in
+// this codebase still uses the blocking d.run() and still hangs the tab.
+void handle_preferences(void)
+{
+	// Save the existing preferences, in case we have to reload them
+	write_preferences();
+
+	// Create top-level dialog
+	dialog *d = new dialog();
+	vertical_placer *placer = new vertical_placer;
+	w_title *w_header = new w_title("PREFERENCES");
+	d->add(w_header);
+	w_button *w_player = new w_button("PLAYER", player_dialog, d);
+	d->add(w_player);
+	w_button *w_online = new w_button("INTERNET", online_dialog, d);
+	d->add(w_online);
+	w_button *w_graphics = new w_button("GRAPHICS", graphics_dialog, d);
+	d->add(w_graphics);
+	w_button *w_sound = new w_button("SOUND", sound_dialog, d);
+	d->add(w_sound);
+	w_button *w_controls = new w_button("CONTROLS", controls_dialog, d);
+	d->add(w_controls);
+	w_button *w_environment = new w_button("ENVIRONMENT", environment_dialog, d);
+	d->add(w_environment);
+	w_button *w_plugins = new w_button("PLUGINS", plugins_dialog, d);
+	d->add(w_plugins);
+
+	w_button *w_return = new w_button("RETURN", dialog_cancel, d);
+	d->add(w_return);
+
+	placer->add(w_header);
+	placer->add(new w_spacer, true);
+	placer->add(w_player);
+	placer->add(w_online);
+	placer->add(w_graphics);
+	placer->add(w_sound);
+	placer->add(w_controls);
+	placer->add(w_environment);
+	placer->add(w_plugins);
+	placer->add(new w_spacer, true);
+	placer->add(w_return);
+
+	d->set_widget_placer(placer);
+
+	// Clear menu screen
+	clear_screen();
+
+	// Run dialog cooperatively; continue what used to run after d.run()
+	// returned (redraw main menu) once it actually closes.
+	run_dialog_cooperatively(d, [d](int) {
+		display_main_menu();
+		delete d;
+	});
+}
+#else
 void handle_preferences(void)
 {
 	// Save the existing preferences, in case we have to reload them
@@ -272,6 +335,7 @@ void handle_preferences(void)
 	// Redraw main menu
 	display_main_menu();
 }
+#endif
 
 class CrosshairPref : public Bindable<int>
 {

@@ -1052,12 +1052,28 @@ bool idle_game_state(uint64_t time)
 				case _display_intro_screens_for_demo:
 				case _display_main_menu:
 					/* Start the demo.. */
+#ifdef __EMSCRIPTEN__
+					// Web port (see ../../WEB_PORT_PLAN.md, M4h): confirmed via a
+					// real browser session that this is what a menu click
+					// appeared to hang on -- not the click handling itself, but
+					// this 30s idle auto-demo timer (TICKS_UNTIL_DEMO_STARTS)
+					// expiring and firing begin_game(_demo, ...) on the very next
+					// idle tick after any click, landing in demo/replay loading
+					// code that's never been exercised (let alone converted off
+					// blocking constructs) on this port. Demo auto-play isn't
+					// part of any milestone yet, so just don't arm it here,
+					// rather than chase blocking calls inside a feature nobody's
+					// verified works at all yet.
+					fprintf(stderr, "[idle_game_state] auto-demo timer expired (skipped on web port)\n");
+					game_state.phase = TICKS_UNTIL_DEMO_STARTS;
+#else
 					if(!environment_preferences->auto_play_demos ||
 					   !begin_game(_demo, false))
 					{
 						/* This means that there was not a valid demo to play */
 						game_state.phase= TICKS_UNTIL_DEMO_STARTS;
 					}
+#endif
 					break;
 
 				case _close_game:
@@ -3193,19 +3209,6 @@ void update_menu_click_tracking_motion(int mx, int my)
 	}
 }
 
-void update_menu_click_tracking_idle(void)
-{
-	if (!menu_click_tracking.active)
-		return;
-
-	static uint64_t last_redraw = 0;
-	if (machine_tick_count() > last_redraw + TICKS_PER_SECOND / 30)
-	{
-		draw_intro_screen();
-		last_redraw = machine_tick_count();
-	}
-}
-
 void finish_menu_click_tracking(int mx, int my)
 {
 	if (!menu_click_tracking.active)
@@ -3779,3 +3782,18 @@ size_t should_restore_game_networked(FileSpecifier& file)
 
         return theResult;
 }
+
+#ifdef __EMSCRIPTEN__
+#include <emscripten/emscripten.h>
+// Web port temporary test hook (see ../../WEB_PORT_PLAN.md, M4h): calls
+// do_preferences() directly, bypassing the whole SDL mouse-event/canvas-
+// coordinate pipeline entirely, so it can be invoked from a Node.js test
+// harness via Module.ccall() without needing a real click (synthetic-click
+// coordinate calibration in a headless DOM stub proved unreliable -- the
+// menu layout never got hit in dozens of swept grid points). Not reachable
+// from any real code path; not part of the built game UI.
+extern "C" EMSCRIPTEN_KEEPALIVE void web_test_open_preferences(void)
+{
+	do_preferences();
+}
+#endif

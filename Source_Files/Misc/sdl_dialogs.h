@@ -202,6 +202,12 @@ public:
 	// Run dialog modally
 	int run(bool intro_exit_sounds = true);
 
+	// Web port (see ../../WEB_PORT_PLAN.md, M4c-ii): one step of run()'s
+	// loop body, for cooperative (non-blocking, one-step-per-browser-frame)
+	// driving via run_dialog_cooperatively() below instead of run()'s
+	// blocking while loop. Returns true once the dialog is ready to close.
+	bool pump_once(void);
+
 	// Put dialog on screen
 	void start(bool play_sound = true);
 
@@ -437,5 +443,18 @@ extern void dialog_cancel(void *arg);
 class w_text_entry;
 extern void dialog_try_ok(w_text_entry* text_entry);
 extern void dialog_disable_ok_if_empty(w_text_entry* inTextEntry);
+
+#ifdef __EMSCRIPTEN__
+// Web port (see ../../WEB_PORT_PLAN.md, M4c-ii): non-blocking alternative to
+// dialog::run(), needed because that blocks the whole browser tab under
+// Emscripten -- see the comment on its implementation in sdl_dialogs.cpp for
+// the full explanation. At most one dialog can run cooperatively at a time
+// (matches dialog::run()'s own modal nesting via top_dialog); call
+// update_cooperative_dialog() once per browser frame (already wired into
+// shell.cpp's main_event_loop_iteration) to drive it forward.
+bool cooperative_dialog_active(void);
+void run_dialog_cooperatively(dialog *d, std::function<void(int)> on_finish, bool intro_exit_sounds = true);
+void update_cooperative_dialog(void);
+#endif
 
 #endif

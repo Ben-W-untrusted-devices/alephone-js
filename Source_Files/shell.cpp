@@ -729,6 +729,20 @@ const uint32 TICKS_BETWEEN_EVENT_POLL = 16; // 60 Hz
 // preserves the exact original persistence across iterations either way.
 static void main_event_loop_iteration(short game_state)
 {
+#ifdef __EMSCRIPTEN__
+	// Web port (see ../../WEB_PORT_PLAN.md, M4c-ii): while a dialog is being
+	// driven cooperatively (see sdl_dialogs.h/.cpp), it needs exclusive
+	// access to input for the same reason a real dialog::run() call would
+	// have it -- modal dialogs aren't meant to let the screen underneath
+	// also process clicks/keys. Skip all the normal per-frame handling
+	// below entirely rather than risk both consuming the same SDL events.
+	if (cooperative_dialog_active())
+	{
+		update_cooperative_dialog();
+		return;
+	}
+#endif
+
 	uint64_t cur_time = machine_tick_count();
 	bool yield_time = false;
 	bool poll_event = false;
@@ -765,6 +779,24 @@ static void main_event_loop_iteration(short game_state)
 			yield_time = poll_event = true;
 			break;
 	}
+
+#ifdef __EMSCRIPTEN__
+	// Web port (see ../../WEB_PORT_PLAN.md, M4h): yield_time below drives a
+	// call to SDL_WaitEventTimeout(), a genuine "block until the next event
+	// or N ms elapses" wait -- on native platforms this is a real, cheap
+	// power-saving idle wait. Doing that properly requires the runtime to
+	// suspend execution and resume later, which needs a real OS thread or
+	// Asyncify; this build uses WASM-native exceptions instead of Asyncify
+	// (M4d), so there's no way for it to actually resume once it starts
+	// waiting -- confirmed in real-browser testing: it worked for the first
+	// couple of frames (an event happened to already be queued each time),
+	// then permanently hung the tab the first time it had to genuinely wait
+	// with nothing pending. The idle-power-saving it's for doesn't apply to
+	// a browser tab anyway (requestAnimationFrame already throttles this),
+	// so just skip it and fall through to the ordinary non-blocking
+	// SDL_PollEvent drain below.
+	yield_time = false;
+#endif
 
 	if (poll_event) {
 		global_idle_proc();
@@ -804,10 +836,6 @@ static void main_event_loop_iteration(short game_state)
 
 	execute_timer_tasks(machine_tick_count());
 	idle_game_state(machine_tick_count());
-	// Web port (see ../../WEB_PORT_PLAN.md, M4h): drives the periodic
-	// redraw a menu-button press needs while the mouse isn't moving --
-	// see update_menu_click_tracking_idle()'s own comment in interface.cpp.
-	update_menu_click_tracking_idle();
 
 	auto fps_target = get_fps_target();
 	if (!get_keyboard_controller_status())

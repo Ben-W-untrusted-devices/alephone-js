@@ -2229,38 +2229,104 @@ void dialog::event(SDL_Event &e)
  *  Run dialog modally, returns result code (0 = ok, -1 = cancel)
  */
 
+// Web port (see ../../WEB_PORT_PLAN.md, M4c-ii): the body of run()'s loop,
+// factored out so it can be driven either by that blocking while loop
+// (native, and Emscripten's default when nothing needs it run cooperatively)
+// or one step per browser frame from run_dialog_cooperatively()/
+// update_cooperative_dialog() below -- returns true once the dialog is
+// ready to close (mirrors `done`). Behavior is unchanged from the original
+// inline loop body; this is purely an extraction, not a logic change.
+bool dialog::pump_once(void)
+{
+	// Process events
+	process_events();
+	if (done)
+		return true;
+
+	if (machine_tick_count() > last_redraw + TICKS_PER_SECOND / 30)
+	{
+		draw_dirty_widgets();
+		SDL_Rect r{0, 0, rect.w, rect.h};
+		update(r);
+		last_redraw = machine_tick_count();
+	}
+
+	// Run custom processing function
+	if (processing_function)
+		processing_function(this);
+
+	// Give time to system
+	global_idle_proc();
+	return false;
+}
+
 int dialog::run(bool intro_exit_sounds)
 {
 	// Put dialog on screen
 	start(intro_exit_sounds);
 
 	// Run dialog loop
-	while (!done) {
-		// Process events
-		process_events();
-		if (done)
-			break;
-
-		if (machine_tick_count() > last_redraw + TICKS_PER_SECOND / 30)
-		{
-			draw_dirty_widgets();
-			SDL_Rect r{0, 0, rect.w, rect.h};
-			update(r);
-			last_redraw = machine_tick_count();
-		}
-        
-		// Run custom processing function
-		if (processing_function)
-			processing_function(this);
-
-		// Give time to system
-		global_idle_proc();
+	while (!pump_once()) {
 		yield();
 	}
 
 	// Remove dialog from screen
 	return finish(intro_exit_sounds);
 }
+
+#ifdef __EMSCRIPTEN__
+// Web port (see ../../WEB_PORT_PLAN.md, M4c-ii): dialog::run()'s while loop
+// above never returns control to the browser between iterations -- fine on
+// native (a real OS thread), but a permanent tab hang on Emscripten's
+// single-threaded, non-Asyncify build (confirmed via a headless Node.js
+// reproduction of the exact real-browser lockup: do_preferences() calling
+// handle_preferences() calling this loop hangs the whole process). This
+// drives the same start()/pump_once()/finish() sequence one step per
+// browser frame (see update_cooperative_dialog(), called from shell.cpp's
+// main_event_loop_iteration) instead, via a completion callback fired once
+// the dialog actually closes. Callers that used to do
+// `int result = d.run(); ...use result...` need restructuring to
+// `run_dialog_cooperatively(&d, [](int result){ ...use result... });`
+// instead -- only handle_preferences() has been converted so far (the one
+// confirmed hanging in real-browser testing); every other dialog::run()
+// call site (~28, per M4c-i's research) still blocks and will still hang
+// the tab until it gets the same treatment.
+namespace {
+	dialog *g_cooperative_dialog = nullptr;
+	std::function<void(int)> g_cooperative_dialog_on_finish;
+	bool g_cooperative_dialog_intro_exit_sounds = true;
+}
+
+bool cooperative_dialog_active(void)
+{
+	return g_cooperative_dialog != nullptr;
+}
+
+void run_dialog_cooperatively(dialog *d, std::function<void(int)> on_finish, bool intro_exit_sounds)
+{
+	assert(!cooperative_dialog_active());
+	d->start(intro_exit_sounds);
+	g_cooperative_dialog = d;
+	g_cooperative_dialog_on_finish = std::move(on_finish);
+	g_cooperative_dialog_intro_exit_sounds = intro_exit_sounds;
+}
+
+void update_cooperative_dialog(void)
+{
+	if (!g_cooperative_dialog)
+		return;
+
+	if (!g_cooperative_dialog->pump_once())
+		return;
+
+	int result = g_cooperative_dialog->finish(g_cooperative_dialog_intro_exit_sounds);
+	auto on_finish = std::move(g_cooperative_dialog_on_finish);
+	g_cooperative_dialog = nullptr;
+	g_cooperative_dialog_on_finish = nullptr;
+	if (on_finish)
+		on_finish(result);
+}
+#endif
 
 
 /*
