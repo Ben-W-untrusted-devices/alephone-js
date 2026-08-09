@@ -21,7 +21,16 @@
       font-size: 0.9em;
     }
     button { font-size: 1em; padding: 0.5em 1em; margin-top: 1rem; }
-    #canvas { display: block; background: #000; margin-top: 1rem; width: 640px; height: 480px; }
+    /* No explicit width/height here: the game sets the canvas's actual
+       width/height *attributes* (its real resolution) once it knows the
+       screen size, via Emscripten's SDL2 backend. Forcing a CSS display
+       size here would leave that mismatched with the internal resolution
+       -- rendering would still look right (just scaled), but mouse click
+       coordinates (computed from where the click landed in *displayed*
+       pixels, then mapped to the canvas's internal resolution) would come
+       out wrong, which fits "menu renders, but no click does anything".
+       See WEB_PORT_PLAN.md, M4h. */
+    #canvas { display: block; background: #000; margin-top: 1rem; }
     #log { font-size: 0.8em; color: #333; white-space: pre-wrap; background: #f4f4f4; padding: 0.5em; max-height: 12rem; overflow-y: auto; }
   </style>
 </head>

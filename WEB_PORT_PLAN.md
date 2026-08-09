@@ -1081,6 +1081,30 @@ here is implicit, not explicit permission to redistribute.
         data read directly from disk into Node's memory, never written
         back, transmitted, or committed) — see Findings for the full
         story and the harness's safety design.
+- [ ] **M4h — real browser milestone: title screen and main menu genuinely
+      render against real Marathon 2 data (user-confirmed) — but no menu
+      item responds to clicks.** Two candidate causes investigated so far,
+      one ruled out, one fixed but unconfirmed:
+  - [x] Ruled out: the engine's default real-fullscreen request (the
+        Fullscreen API) as the cause of dead clicks — it *was* the cause
+        of dev tools becoming completely inaccessible in Safari (blank
+        window), fixed by passing `--windowed` in `game.html`. Confirmed
+        by the user that switching to windowed didn't fix the click issue
+        on its own, so these are two separate problems, not one.
+  - [ ] Suspected, fixed, **not yet user-confirmed**: `game.html`'s
+        `#canvas` CSS hardcoded a `640x480` *display* size, independent of
+        whatever internal resolution the engine sets on the canvas
+        (likely the real screen size, once running in a real browser with
+        a working `window.screen`). A mismatch between displayed size and
+        internal resolution wouldn't affect rendering (just visual
+        scaling) but would throw off mouse click coordinate mapping —
+        exactly "renders fine, no click does anything." Removed the
+        hardcoded CSS size entirely so the canvas renders 1:1 with
+        whatever resolution the engine actually sets. Not yet
+        re-tested against real data (can't reproduce the bug itself
+        without real Map/Shapes/Images content actually rendering a real,
+        interactive menu — synthetic placeholder data never gets far
+        enough to test this).
 - [ ] **M5 — Audio**
 - [ ] **M6 — Save games / prefs persistence**
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)
