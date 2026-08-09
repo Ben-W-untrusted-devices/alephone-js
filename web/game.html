@@ -83,7 +83,14 @@
         log(`/data top level: ${topLevel.join(", ")}`);
 
         log("Starting main()...");
-        Module.callMain(["/data"]);
+        // --windowed: the engine defaults to requesting real fullscreen
+        // (the browser Fullscreen API), which in at least Safari also
+        // hides dev tools access entirely for that tab -- forcing windowed
+        // avoids the transition altogether, which is also a useful
+        // diagnostic for whether unresponsive menu clicks are related to
+        // it (e.g. input listeners bound against a pre-fullscreen element
+        // reference).
+        Module.callMain(["--windowed", "/data"]);
       } catch (err) {
         log("Failed to start:", err instanceof Error ? err.message : String(err));
         console.error(err);
