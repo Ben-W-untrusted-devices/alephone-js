@@ -1416,15 +1416,69 @@ here is implicit, not explicit permission to redistribute.
         confirming the nested-dialog-stack fix (see above) actually works,
         not just compiles.
       - **Not yet confirmed in a real browser.**
-  - [ ] **Remaining, not yet converted**: ~22 other `dialog::run()` call
-        sites outside `preferences.cpp` — alerts (`csalerts_sdl.cpp`, means
-        *any* error message still hangs), Load/Save (`FileHandler.cpp`,
-        `QuickSave.cpp`), network game dialogs (`network_dialogs.cpp`,
-        `network_dialog_widgets_sdl.cpp`, `Metaserver/*.cpp`), and a few
-        more in `shell.cpp`/`interface.cpp`/`Statistics.cpp`/`sdl_widgets.cpp`
-        — same proven pattern (including the `[&]`→`[=]` internal-callback
-        check, worth re-checking per dialog rather than assuming absence),
-        applied per call site, not yet started.
+  - [x] **User confirmed real progress in a real browser**: Preferences and
+        its sub-dialogs work, including nesting. Also surfaced several new,
+        *different* bugs (not blocking-loop hangs) — see below — and gave
+        explicit scope guidance: skip network dialogs entirely (non-
+        functional / not needed), but Load/Save and alerts do need to work,
+        "and account for this being a browser."
+  - [x] **`alert_user()` (`csalerts_sdl.cpp`) converted** — same pattern as
+        the Preferences dialogs, with one extra wrinkle: for a fatal alert,
+        native code calls `exit(1)` *after* `d.run()` returns (i.e. only
+        once the user has seen and dismissed the dialog). Converting to
+        `run_dialog_cooperatively()` naively would make this function
+        return immediately and hit that `exit(1)` right away, killing the
+        engine before anyone sees the error message — moved the `exit(1)`
+        into the completion callback instead, with an early `return`
+        skipping the original (still-present, now shared-with-native)
+        trailing `if (severity == fatalError) exit(1);` for the dialog
+        path specifically. This is significant: `alert_user()` is how the
+        engine reports *any* error anywhere in the codebase, so this was
+        blocking on literally any error occurring. Compiles clean; not yet
+        tested against a real triggered alert (haven't found/forced one).
+  - [ ] **Remaining, not yet converted**: ~21 other `dialog::run()` call
+        sites outside `preferences.cpp` — Load/Save (`FileHandler.cpp`,
+        `QuickSave.cpp`, needs real design thought per the user's "account
+        for this being a browser" -- there's no native file-picker to fall
+        back on, unlike everything converted so far), and a few more in
+        `shell.cpp`/`interface.cpp`/`Statistics.cpp`/`sdl_widgets.cpp` — same
+        proven pattern (including the `[&]`→`[=]` internal-callback check).
+        **Explicitly out of scope per the user**: network game dialogs
+        (`network_dialogs.cpp`, `network_dialog_widgets_sdl.cpp`,
+        `Metaserver/*.cpp`) — non-functional / not needed for this port.
+  - [ ] **New bugs found in this same real-browser session, NOT blocking-
+        loop hangs — a different subsystem (gameplay rendering /
+        canvas-resolution handling) this session never touched or
+        investigated before now:**
+      - Starting a game renders only one frame, distorted / not filling
+        the canvas; pressing movement keys (a/d) returns to the main menu.
+      - After returning from that broken game state, the main menu itself
+        renders at roughly 1/4 size — canvas/resolution mismatch, not yet
+        root-caused. Possibly `change_screen_mode()` being called with
+        different dimensions entering gameplay vs. restored incorrectly on
+        return.
+      - Mouse cursor stays hidden after returning to the main menu (and
+        after leaving Credits specifically restores it) — "repeated
+        notifications from the browser" suggest something is calling
+        `hide_cursor()` every frame rather than once. Suspect but haven't
+        confirmed: `full_fade()`'s new instant-completion (see above) may
+        have broken an assumption elsewhere that a fade being "in
+        progress" for a while naturally prevents some per-frame check from
+        re-triggering fade-start (and whatever side effects, e.g.
+        `start_interface_fade()`'s own `hide_cursor()` call) every frame.
+      - Slider widgets in Preferences sub-dialogs don't respond; Crosshair
+        Settings' Accept/Cancel buttons don't work. `w_slider` itself has
+        no blocking loop (confirmed by reading `sdl_widgets.cpp` — it
+        relies on the dialog's normal per-event `mouse_move()`/`click()`/
+        `event()` dispatch, which should keep working under the
+        cooperative conversion) — likely downstream of the same
+        canvas/coordinate-mapping issue as the quarter-size menu bug
+        rather than a separate root cause, but not confirmed.
+      - Mouse Advanced / Controller Advanced sub-dialogs show a copy of
+        the parent menu image at the top-left corner as their background —
+        likely the same resolution/canvas mismatch leaving stale pixel
+        content visible.
+      - None of these investigated in depth yet — flagged, not fixed.
 - [ ] **M5 — Audio**
 - [ ] **M6 — Save games / prefs persistence**
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)

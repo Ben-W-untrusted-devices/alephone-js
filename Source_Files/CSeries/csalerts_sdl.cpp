@@ -185,11 +185,22 @@ void alert_user(const char *message, short severity)
 			break;
 	}
 
+    // Web port (see ../../WEB_PORT_PLAN.md, M4c-ii; Source_Files/Misc/preferences.cpp's
+    // player_dialog() has the fuller explanation of this pattern): d is
+    // heap-allocated and aliased by reference under Emscripten. Alert
+    // dialogs matter more than most here -- alert_user() is how the engine
+    // reports *any* error anywhere, so leaving this blocking meant any
+    // error at all hung the tab.
+#ifdef __EMSCRIPTEN__
+    dialog *d_heap = new dialog();
+    dialog &d = *d_heap;
+#else
     dialog d;
+#endif
     vertical_placer *placer = new vertical_placer;
     placer->dual_add(new w_title(title.c_str()), d);
     placer->add(new w_spacer, true);
-    
+
     // Wrap lines
     uint16 style;
     font_info *font = get_theme_font(MESSAGE_WIDGET, style);
@@ -221,9 +232,26 @@ void alert_user(const char *message, short severity)
 
     d.activate_widget(button);
 
+#ifdef __EMSCRIPTEN__
+    // Web port: exit(1) for a fatal alert has to wait until the user has
+    // actually seen and dismissed the dialog (matching native's behavior,
+    // where d.run() blocks until then) -- moved into the completion
+    // callback instead of running immediately after this function returns.
+    // The early return skips the final `if (severity == fatalError)
+    // exit(1);` below (shared with the !MainScreenVisible() branch, which
+    // isn't converted -- that's a native OS message box, not this dialog).
+    run_dialog_cooperatively(d_heap, [d_heap, severity](int) {
+      if (severity != fatalError && top_dialog == NULL)
+        update_game_window();
+      delete d_heap;
+      if (severity == fatalError) exit(1);
+    });
+    return;
+#else
     d.run();
     if (severity != fatalError && top_dialog == NULL)
       update_game_window();
+#endif
   }
 
 #endif
