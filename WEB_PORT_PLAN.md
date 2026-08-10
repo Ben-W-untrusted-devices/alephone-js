@@ -1524,6 +1524,41 @@ here is implicit, not explicit permission to redistribute.
         real-browser retesting is the only way to know if this is
         complete, or if "only one frame renders" needs a further,
         separate fix on top of this.
+  - [x] **User confirmed the resolution fix worked** — gameplay and the
+        menu now size correctly. But "stuck at first frame," the repeated
+        cursor-hiding, and "any key returns to the menu" all persisted,
+        confirming these are a separate bug from the resolution mismatch,
+        not just downstream of it. User asked to keep investigating this
+        specifically.
+  - [x] **Found a real, significant gap while investigating**:
+        `main_event_loop_emscripten_callback()` (`shell.cpp`) — the
+        callback registered with `emscripten_set_main_loop()`, called once
+        per browser frame — had **no exception safety at all** around its
+        call to `main_event_loop_iteration()`, unlike the `_quit_game`
+        shutdown path two lines above it (which already wraps
+        `shutdown_application()` in `try { } catch (...) { }`). If
+        anything throws during gameplay's per-frame update/render (the one
+        major code path this whole session's testing has never actually
+        exercised — everything else has been menus/dialogs), the exception
+        propagates straight out of a callback registered with Emscripten's
+        main loop driver. An uncaught exception escaping that callback
+        stops the browser from ever scheduling another frame -- a
+        permanent, silent freeze after whichever frame threw, matching
+        "renders exactly one frame and never updates again" precisely.
+      - **Fixed**: wrapped the per-frame call in `try`/`catch`
+        (`std::exception` and `catch (...)`), logging via `fprintf(stderr, ...)`
+        (already wired into `game.html`'s visible log panel) instead of
+        letting the exception kill the loop -- rate-limited to 20 reports
+        so a persistent per-frame failure can't spam the log forever. This
+        both prevents the freeze outright *and*, if something is still
+        throwing, finally surfaces the real error message -- this port has
+        had no working browser dev tools all session (see `game.html`'s
+        own self-diagnostic logging, added for the same root reason).
+      - Compiles clean, no regression in the Node harness (30+ heartbeats,
+        same as before). **Not yet confirmed in a real browser** — like
+        the resolution fix, this needs real gameplay data and real
+        rendering to actually exercise the code path in question, neither
+        of which the headless Node harness can provide.
 - [ ] **M5 — Audio**
 - [ ] **M6 — Save games / prefs persistence**
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)

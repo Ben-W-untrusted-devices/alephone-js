@@ -891,7 +891,43 @@ static void main_event_loop_emscripten_callback(void)
 		try { shutdown_application(); } catch (...) {}
 		return;
 	}
-	main_event_loop_iteration(game_state);
+	// Web port (see ../WEB_PORT_PLAN.md, M4h): this call had no exception
+	// safety at all -- if anything inside main_event_loop_iteration() ever
+	// throws (e.g. during real gameplay's per-frame update/render, unlike
+	// the menu/dialog paths this port has mostly exercised so far), the
+	// exception propagates straight out of this callback, registered with
+	// emscripten_set_main_loop(); an uncaught exception escaping a
+	// registered main-loop callback stops the browser from ever scheduling
+	// another frame -- permanent, silent freeze after whatever frame threw,
+	// matching a real-browser report of gameplay rendering exactly one
+	// frame and never updating again. Catch and log (rate-limited, so a
+	// persistent per-frame failure doesn't spam the log) instead of
+	// silently dying, both to stop the freeze and to get real diagnostic
+	// output for what's actually failing -- this port hasn't had working
+	// browser dev tools all session (see game.html's own self-diagnostic
+	// logging, added for the same reason).
+	try
+	{
+		main_event_loop_iteration(game_state);
+	}
+	catch (std::exception& e)
+	{
+		static int report_count = 0;
+		if (report_count < 20)
+		{
+			++report_count;
+			fprintf(stderr, "[main_event_loop] caught exception in game_state=%d: %s\n", game_state, e.what());
+		}
+	}
+	catch (...)
+	{
+		static int report_count = 0;
+		if (report_count < 20)
+		{
+			++report_count;
+			fprintf(stderr, "[main_event_loop] caught unknown exception in game_state=%d\n", game_state);
+		}
+	}
 }
 #endif
 
