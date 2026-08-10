@@ -423,7 +423,15 @@ static void crosshair_dialog(void *arg)
 	dialog *parent = (dialog *) arg;
 	(void)parent;
 
+	// Web port (see ../../WEB_PORT_PLAN.md, M4c-ii; player_dialog() has the
+	// fuller explanation): d is heap-allocated and aliased by reference
+	// under Emscripten.
+#ifdef __EMSCRIPTEN__
+	dialog *d_heap = new dialog();
+	dialog &d = *d_heap;
+#else
 	dialog d;
+#endif
 	vertical_placer *placer = new vertical_placer;
 	w_title *w_header = new w_title("CROSSHAIR SETTINGS");
 	placer->dual_add(w_header, d);
@@ -526,7 +534,12 @@ static void crosshair_dialog(void *arg)
 
 	clear_screen();
 
+#ifdef __EMSCRIPTEN__
+	run_dialog_cooperatively(d_heap, [d_heap, OldCrosshairs](int result) {
+		if (result == 0) // Accepted
+#else
 	if (d.run() == 0) // Accepted
+#endif
 	{
 		crosshair_binders->migrate_all_first_to_second();
 		player_preferences->Crosshairs.PreCalced = false;
@@ -538,6 +551,10 @@ static void crosshair_dialog(void *arg)
 	}
 
 	crosshair_binders.reset(0);
+#ifdef __EMSCRIPTEN__
+		delete d_heap;
+	});
+#endif
 }
 
 /*
@@ -559,7 +576,18 @@ static const char* solo_profile_labels[] = {
 static void player_dialog(void *arg)
 {
 	// Create dialog
+	// Web port (see ../../WEB_PORT_PLAN.md, M4c-ii): d is heap-allocated and
+	// aliased by reference under Emscripten so the widget-construction code
+	// below (identical either way) doesn't need duplicating -- only run()'s
+	// blocking call itself (native) vs. run_dialog_cooperatively() (web,
+	// dialog::run() blocks the whole tab -- see sdl_dialogs.cpp) differs,
+	// at the bottom of this function.
+#ifdef __EMSCRIPTEN__
+	dialog *d_heap = new dialog();
+	dialog &d = *d_heap;
+#else
 	dialog d;
+#endif
 	vertical_placer *placer = new vertical_placer;
 	placer->dual_add(new w_title("PLAYER SETTINGS"), d);
 	placer->add(new w_spacer());
@@ -638,6 +666,63 @@ static void player_dialog(void *arg)
 	clear_screen();
 
 	// Run dialog
+#ifdef __EMSCRIPTEN__
+	run_dialog_cooperatively(d_heap, [d_heap, name_w, level_w, solo_profile_w, pcolor_w, tcolor_w, crosshairs_active_w](int result) {
+		if (result == 0) {	// Accepted
+			bool changed = false;
+
+			const char *name = name_w->get_text();
+			if (strcmp(name, player_preferences->name)) {
+				strncpy(player_preferences->name, name, PREFERENCES_NAME_LENGTH);
+				player_preferences->name[PREFERENCES_NAME_LENGTH] = '\0';
+				changed = true;
+			}
+
+			int16 level = static_cast<int16>(level_w->get_selection());
+			assert(level >= 0);
+			if (level != player_preferences->difficulty_level) {
+				player_preferences->difficulty_level = level;
+				changed = true;
+			}
+
+			if (Scenario::instance()->AllowsClassicGameplay())
+			{
+				auto profile = solo_profile_w->get_selection();
+				if (profile >= 1) ++profile;
+
+				if (profile != player_preferences->solo_profile)
+				{
+					player_preferences->solo_profile = profile;
+					changed = true;
+				}
+			}
+
+			int16 color = static_cast<int16>(pcolor_w->get_selection());
+			assert(color >= 0);
+			if (color != player_preferences->color) {
+				player_preferences->color = color;
+				changed = true;
+			}
+
+			int16 team = static_cast<int16>(tcolor_w->get_selection());
+			assert(team >= 0);
+			if (team != player_preferences->team) {
+				player_preferences->team = team;
+				changed = true;
+			}
+
+			bool crosshair = crosshairs_active_w->get_selection();
+			if (crosshair != player_preferences->crosshairs_active) {
+				player_preferences->crosshairs_active = crosshair;
+				changed = true;
+			}
+
+			if (changed)
+				write_preferences();
+		}
+		delete d_heap;
+	});
+#else
 	if (d.run() == 0) {	// Accepted
 		bool changed = false;
 
@@ -680,7 +765,7 @@ static void player_dialog(void *arg)
 			player_preferences->team = team;
 			changed = true;
 		}
-		
+
 		bool crosshair = crosshairs_active_w->get_selection();
 		if (crosshair != player_preferences->crosshairs_active) {
 			player_preferences->crosshairs_active = crosshair;
@@ -690,6 +775,7 @@ static void player_dialog(void *arg)
 		if (changed)
 			write_preferences();
 	}
+#endif
 }
 
 /*
@@ -780,7 +866,15 @@ static void signup_dialog_ok(void *arg)
 
 static void signup_dialog(void *arg)
 {
+	// Web port (see ../../WEB_PORT_PLAN.md, M4c-ii; player_dialog() above
+	// has the fuller explanation of this pattern): d is heap-allocated and
+	// aliased by reference under Emscripten.
+#ifdef __EMSCRIPTEN__
+	dialog *d_heap = new dialog();
+	dialog &d = *d_heap;
+#else
 	dialog d;
+#endif
 	vertical_placer *placer = new vertical_placer;
 	placer->dual_add(new w_title("ACCOUNT SIGN UP"), d);
 	placer->add(new w_spacer());
@@ -819,7 +913,21 @@ static void signup_dialog(void *arg)
 	d.set_widget_placer(placer);
 	
 	clear_screen();
-	
+
+#ifdef __EMSCRIPTEN__
+	run_dialog_cooperatively(d_heap, [d_heap, arg](int result) {
+		if (result == 0)
+		{
+			// account was successfully created, update parent fields with new account info
+			dialog *parent = static_cast<dialog *>(arg);
+			w_text_entry *login_w = static_cast<w_text_entry *>(parent->get_widget_by_id(iONLINE_USERNAME_W));
+			login_w->set_text(network_preferences->metaserver_login);
+			w_password_entry *password_w = static_cast<w_password_entry *>(parent->get_widget_by_id(iONLINE_PASSWORD_W));
+			password_w->set_text(network_preferences->metaserver_password);
+		}
+		delete d_heap;
+	});
+#else
 	if (d.run() == 0)
 	{
 		// account was successfully created, update parent fields with new account info
@@ -829,12 +937,21 @@ static void signup_dialog(void *arg)
 		w_password_entry *password_w = static_cast<w_password_entry *>(parent->get_widget_by_id(iONLINE_PASSWORD_W));
 		password_w->set_text(network_preferences->metaserver_password);
 	}
+#endif
 }
 
 static void online_dialog(void *arg)
 {
 	// Create dialog
+	// Web port (see ../../WEB_PORT_PLAN.md, M4c-ii; player_dialog() above
+	// has the fuller explanation of this pattern): d is heap-allocated and
+	// aliased by reference under Emscripten.
+#ifdef __EMSCRIPTEN__
+	dialog *d_heap = new dialog();
+	dialog &d = *d_heap;
+#else
 	dialog d;
+#endif
 	vertical_placer *placer = new vertical_placer;
 	placer->dual_add(new w_title("INTERNET GAME SETUP"), d);
 	placer->add(new w_spacer());
@@ -964,23 +1081,28 @@ static void online_dialog(void *arg)
 	clear_screen();
 	
 	// Run dialog
+#ifdef __EMSCRIPTEN__
+	run_dialog_cooperatively(d_heap, [d_heap, name_w, login_w, password_w, custom_colors_w, primary_w, secondary_w, mute_guests_w, join_meta_w, allow_stats_w](int result) {
+		if (result == 0) {	// Accepted
+#else
 	if (d.run() == 0) {	// Accepted
+#endif
 		bool changed = false;
-		
+
 		const char *name = name_w->get_text();
 		if (strcmp(name, player_preferences->name)) {
 			strncpy(player_preferences->name, name, PREFERENCES_NAME_LENGTH);
 			player_preferences->name[PREFERENCES_NAME_LENGTH] = '\0';
 			changed = true;
 		}
-		
+
 		const char *metaserver_login = login_w->get_text();
 		if (strcmp(metaserver_login, network_preferences->metaserver_login)) {
 			strncpy(network_preferences->metaserver_login, metaserver_login, network_preferences_data::kMetaserverLoginLength-1);
 			network_preferences->metaserver_login[network_preferences_data::kMetaserverLoginLength-1] = '\0';
 			changed = true;
 		}
-		
+
 		// clear password if login has been cleared
 		if (!strlen(metaserver_login)) {
 			if (strlen(network_preferences->metaserver_password)) {
@@ -995,14 +1117,14 @@ static void online_dialog(void *arg)
 				changed = true;
 			}
 		}
-		
+
 		bool use_custom_metaserver_colors = custom_colors_w->get_selection();
 		if (use_custom_metaserver_colors != network_preferences->use_custom_metaserver_colors)
 		{
 			network_preferences->use_custom_metaserver_colors = use_custom_metaserver_colors;
 			changed = true;
 		}
-		
+
 		if (use_custom_metaserver_colors)
 		{
 			rgb_color primary_color = primary_w->get_selection();
@@ -1011,29 +1133,29 @@ static void online_dialog(void *arg)
 				network_preferences->metaserver_colors[0] = primary_color;
 				changed = true;
 			}
-			
+
 			rgb_color secondary_color = secondary_w->get_selection();
 			if (secondary_color.red != network_preferences->metaserver_colors[1].red || secondary_color.green != network_preferences->metaserver_colors[1].green || secondary_color.blue != network_preferences->metaserver_colors[1].blue)			{
 				network_preferences->metaserver_colors[1] = secondary_color;
 				changed = true;
 			}
-			
+
 		}
-		
+
 		bool mute_metaserver_guests = mute_guests_w->get_selection() == 1;
 		if (mute_metaserver_guests != network_preferences->mute_metaserver_guests)
 		{
 			network_preferences->mute_metaserver_guests = mute_metaserver_guests;
 			changed = true;
 		}
-		
+
 		bool join_meta = join_meta_w->get_selection() == 1;
 		if (join_meta != network_preferences->join_metaserver_by_default)
 		{
 			network_preferences->join_metaserver_by_default = join_meta;
 			changed = true;
 		}
-		
+
 		bool allow_stats = allow_stats_w->get_selection() == 1;
 		if (allow_stats != network_preferences->allow_stats)
 		{
@@ -1041,11 +1163,17 @@ static void online_dialog(void *arg)
 			Plugins::instance()->invalidate();
 			changed = true;
 		}
-		
-		
+
+
 		if (changed)
 			write_preferences();
+#ifdef __EMSCRIPTEN__
+		}
+		delete d_heap;
+	});
+#else
 	}
+#endif
 }
 
 /*
@@ -1157,7 +1285,15 @@ static const vector<string> build_stringvector_from_cstring_array (const char** 
 static void software_rendering_options_dialog(void* arg)
 {
 	// Create dialog
+	// Web port (see ../../WEB_PORT_PLAN.md, M4c-ii; player_dialog() has the
+	// fuller explanation): d is heap-allocated and aliased by reference
+	// under Emscripten.
+#ifdef __EMSCRIPTEN__
+	dialog *d_heap = new dialog();
+	dialog &d = *d_heap;
+#else
 	dialog d;
+#endif
 	vertical_placer *placer = new vertical_placer;
 	placer->dual_add(new w_title("SOFTWARE RENDERING OPTIONS"), d);
 	placer->add(new w_spacer(), true);
@@ -1204,7 +1340,12 @@ static void software_rendering_options_dialog(void* arg)
 	clear_screen();
 
 	// Run dialog
+#ifdef __EMSCRIPTEN__
+	run_dialog_cooperatively(d_heap, [d_heap, depth_w, resolution_w, sw_alpha_blending_w, sw_driver_w, ephemera_quality_w](int result) {
+		if (result == 0) {	// Accepted
+#else
 	if (d.run() == 0) {	// Accepted
+#endif
 		bool changed = false;
 
 #ifdef TRUE_COLOR_ONLY
@@ -1241,10 +1382,16 @@ static void software_rendering_options_dialog(void* arg)
 			graphics_preferences->ephemera_quality = ephemera_quality_w->get_selection();
 			changed = true;
 		}
-		
+
 		if (changed)
 			write_preferences();
+#ifdef __EMSCRIPTEN__
+		}
+		delete d_heap;
+	});
+#else
 	}
+#endif
 }
 
 // ZZZ addition: bounce to correct renderer-config box based on selected rendering system.
@@ -1309,7 +1456,15 @@ static void graphics_dialog(void *arg)
 	dialog *parent = (dialog *)arg;
 
 	// Create dialog
+	// Web port (see ../../WEB_PORT_PLAN.md, M4c-ii; player_dialog() has the
+	// fuller explanation): d is heap-allocated and aliased by reference
+	// under Emscripten.
+#ifdef __EMSCRIPTEN__
+	dialog *d_heap = new dialog();
+	dialog &d = *d_heap;
+#else
 	dialog d;
+#endif
 
 	vertical_placer *placer = new vertical_placer;
 	placer->dual_add(new w_title("GRAPHICS SETUP"), d);
@@ -1377,8 +1532,13 @@ static void graphics_dialog(void *arg)
 	w_toggle *override_fov_w = new w_toggle(graphics_preferences->screen_mode.fov != 0);
 	w_fov_slider *fov_slider_w = new w_fov_slider((graphics_preferences->screen_mode.fov == 0 ? static_cast<int>(View_FOV_Normal()) : graphics_preferences->screen_mode.fov) - 30);
 	fov_slider_w->set_enabled(graphics_preferences->screen_mode.fov != 0);
+	// Web port: [=] not [&] -- under Emscripten this dialog now returns
+	// (via run_dialog_cooperatively(), see below) long before this callback
+	// can fire, so a by-reference capture of this function's own locals
+	// would dangle. Capturing the (heap-owned, dialog-lifetime-valid)
+	// widget pointers by value is correct on both platforms regardless.
 	override_fov_w->set_selection_changed_callback(
-		[&](w_select*) {
+		[=](w_select*) {
 			if (override_fov_w->get_selection())
 			{
 				fov_slider_w->set_enabled(true);
@@ -1482,7 +1642,12 @@ static void graphics_dialog(void *arg)
 	clear_screen();
     
     // Run dialog
+#ifdef __EMSCRIPTEN__
+    run_dialog_cooperatively(d_heap, [=](int result) {
+	    if (result == 0) {	// Accepted
+#else
     if (d.run() == 0) {	// Accepted
+#endif
 	    bool changed = false;
 	    
 	    bool fullscreen = fullscreen_w->get_selection() == 0;
@@ -1606,7 +1771,13 @@ static void graphics_dialog(void *arg)
 		    parent->layout();
 		    parent->draw();		// DirectX seems to need this
 	    }
+#ifdef __EMSCRIPTEN__
+	    }
+	    delete d_heap;
+    });
+#else
     }
+#endif
 }
 
 /*
@@ -1652,7 +1823,15 @@ public:
 static void sound_dialog(void *arg)
 {
 	// Create dialog
+	// Web port (see ../../WEB_PORT_PLAN.md, M4c-ii; player_dialog() has the
+	// fuller explanation): d is heap-allocated and aliased by reference
+	// under Emscripten.
+#ifdef __EMSCRIPTEN__
+	dialog *d_heap = new dialog();
+	dialog &d = *d_heap;
+#else
 	dialog d;
+#endif
 	vertical_placer *placer = new vertical_placer;
 	placer->dual_add(new w_title("SOUND SETUP"), d);
 	placer->add(new w_spacer(), true);
@@ -1681,7 +1860,9 @@ static void sound_dialog(void *arg)
 	table->dual_add(hrtf_w, d);
 	hrtf_w->set_enabled(OpenALManager::Get() && OpenALManager::Get()->GetHrtfSupport() != OpenALManager::HrtfSupport::Unsupported && is_3d_sounds_enabled && sound_preferences->channel_type == ChannelType::_stereo);
 
-	auto hrtf_enable_callback = [&](void*) {
+	// Web port: [=] not [&] -- see the identical note on graphics_dialog's
+	// override_fov_w callback above.
+	auto hrtf_enable_callback = [=](void*) {
 		bool can_enable_hrtf = sounds3d_w->get_selection() == 1
 			&& mapping_index_channel.at(channel_w->get_selection()) == ChannelType::_stereo
 			&& OpenALManager::Get() && OpenALManager::Get()->GetHrtfSupport() == OpenALManager::HrtfSupport::Supported;
@@ -1753,7 +1934,12 @@ static void sound_dialog(void *arg)
 	clear_screen();
 
 	// Run dialog
+#ifdef __EMSCRIPTEN__
+	run_dialog_cooperatively(d_heap, [=](int result) {
+		if (result == 0) {	// Accepted
+#else
 	if (d.run() == 0) {	// Accepted
+#endif
 		bool changed = false;
 
 		uint16 flags = 0;
@@ -1809,6 +1995,10 @@ static void sound_dialog(void *arg)
 		OpenALManager::Get()->SetMasterVolume(SoundManager::From_db(sound_preferences->volume_db));
 		OpenALManager::Get()->SetMusicVolume(SoundManager::From_db(sound_preferences->music_db, true));
 	}
+#ifdef __EMSCRIPTEN__
+	delete d_heap;
+	});
+#endif
 }
 
 
@@ -2351,7 +2541,15 @@ static bool apply_mouse_feel(int selection)
 
 static void mouse_custom_dialog(void *arg)
 {
+	// Web port (see ../../WEB_PORT_PLAN.md, M4c-ii; player_dialog() has the
+	// fuller explanation): d is heap-allocated and aliased by reference
+	// under Emscripten.
+#ifdef __EMSCRIPTEN__
+	dialog *d_heap = new dialog();
+	dialog &d = *d_heap;
+#else
 	dialog d;
+#endif
 	vertical_placer *placer = new vertical_placer;
 	placer->dual_add(new w_title("MOUSE ADVANCED"), d);
 	placer->add(new w_spacer());
@@ -2428,9 +2626,14 @@ static void mouse_custom_dialog(void *arg)
 	mouse_feel_details_changed(NULL);
 	
 	// Run dialog
+#ifdef __EMSCRIPTEN__
+	run_dialog_cooperatively(d_heap, [=](int result) {
+		if (result == 0) {	// Accepted
+#else
 	if (d.run() == 0) {	// Accepted
+#endif
 		bool changed = false;
-		
+
 		int hPos = mouse_h_sens_w->get_selection();
 		float hLog = kMinSensitivityLog + ((float) hPos) * (kSensitivityLogRange / 1000.0f);
 		_fixed hNorm = _fixed(std::exp(hLog) * FIXED_ONE);
@@ -2490,13 +2693,27 @@ static void mouse_custom_dialog(void *arg)
 			write_preferences();
 		}
 		update_mouse_feel(NULL);
+#ifdef __EMSCRIPTEN__
+		}
+		delete d_heap;
+	});
+#else
 	}
+#endif
 }
 
 
 static void controller_details_dialog(void *arg)
 {
+	// Web port (see ../../WEB_PORT_PLAN.md, M4c-ii; player_dialog() has the
+	// fuller explanation): d is heap-allocated and aliased by reference
+	// under Emscripten.
+#ifdef __EMSCRIPTEN__
+	dialog *d_heap = new dialog();
+	dialog &d = *d_heap;
+#else
 	dialog d;
+#endif
 	vertical_placer *placer = new vertical_placer;
 	placer->dual_add(new w_title("CONTROLLER ADVANCED"), d);
 	placer->add(new w_spacer());
@@ -2547,7 +2764,12 @@ static void controller_details_dialog(void *arg)
 	d.set_widget_placer(placer);
 	
 	// Run dialog
+#ifdef __EMSCRIPTEN__
+	run_dialog_cooperatively(d_heap, [=](int result) {
+		if (result == 0) {	// Accepted
+#else
 	if (d.run() == 0) {	// Accepted
+#endif
 		bool changed = false;
 
 		int sensPosX = sens_joy_w_x->get_selection();
@@ -2589,7 +2811,13 @@ static void controller_details_dialog(void *arg)
 		if (changed) {
 			write_preferences();
 		}
+#ifdef __EMSCRIPTEN__
+		}
+		delete d_heap;
+	});
+#else
 	}
+#endif
 }
 
 
@@ -2601,7 +2829,15 @@ static void controls_dialog(void *arg)
 	hotkey_w.clear();
 
 	// Create dialog
+	// Web port (see ../../WEB_PORT_PLAN.md, M4c-ii; player_dialog() has the
+	// fuller explanation): d is heap-allocated and aliased by reference
+	// under Emscripten.
+#ifdef __EMSCRIPTEN__
+	dialog *d_heap = new dialog();
+	dialog &d = *d_heap;
+#else
 	dialog d;
+#endif
 	vertical_placer *placer = new vertical_placer;
 	placer->dual_add(new w_title("CONTROLS"), d);
 	placer->add(new w_spacer());
@@ -2736,7 +2972,9 @@ static void controls_dialog(void *arg)
 	w_select *swim_w = new w_select(input_preferences->modifiers & _inputmod_interchange_swim_sink ? 1 : 0, swim_option_labels);
 	move_options->dual_add(swim_w, d);
 
-	const auto update_swim_w = [&](w_select*) {
+	// Web port: [=] not [&] -- see the identical note on graphics_dialog's
+	// override_fov_w callback earlier in this file.
+	const auto update_swim_w = [=](w_select*) {
 		if (run_w->get_selection() == 2)
 		{
 			swim_w->set_labels(swim_toggle_labels);
@@ -3076,9 +3314,14 @@ static void controls_dialog(void *arg)
 	enter_joystick();
 
 	// Run dialog
+#ifdef __EMSCRIPTEN__
+	run_dialog_cooperatively(d_heap, [=](int result) {
+		if (result == 0) {	// Accepted
+#else
 	if (d.run() == 0) {	// Accepted
+#endif
 		bool changed = false;
-		
+
 		uint16 flags = input_preferences->modifiers & (_inputmod_use_button_sounds|_inputmod_invert_mouse);
 
 		if (run_w->get_selection() == 2)
@@ -3161,16 +3404,31 @@ static void controls_dialog(void *arg)
 	
 		if (changed)
 			write_preferences();
+#ifdef __EMSCRIPTEN__
+		}
+		exit_joystick();
+		delete d_heap;
+	});
+#else
 	}
 
 	exit_joystick();
+#endif
 }
 
 static void plugins_dialog(void* arg)
 {
 	dialog* parent = (dialog*)arg;
 
+	// Web port (see ../../WEB_PORT_PLAN.md, M4c-ii; player_dialog() has the
+	// fuller explanation): d is heap-allocated and aliased by reference
+	// under Emscripten.
+#ifdef __EMSCRIPTEN__
+	dialog *d_heap = new dialog();
+	dialog &d = *d_heap;
+#else
 	dialog d;
+#endif
 	vertical_placer *placer = new vertical_placer;
 	w_title *w_header = new w_title("PLUGINS");
 	placer->dual_add(w_header, d);
@@ -3200,7 +3458,14 @@ static void plugins_dialog(void* arg)
 		old_theme = theme_plugin->directory + theme_plugin->theme;
 	}
 
+#ifdef __EMSCRIPTEN__
+	// mutable: the body below reassigns theme_plugin and iterates plugins,
+	// both captured by value.
+	run_dialog_cooperatively(d_heap, [=](int result) mutable {
+		if (result == 0) {
+#else
 	if (d.run() == 0) {
+#endif
 		bool changed = false;
 		Plugins::iterator plugin = Plugins::instance()->begin();
 		for (Plugins::iterator it = plugins.begin(); it != plugins.end(); ++it, ++plugin) {
@@ -3233,7 +3498,13 @@ static void plugins_dialog(void* arg)
 				parent->quit(0); // Quit the parent dialog so it won't draw in the old theme
 			}
 		}
+#ifdef __EMSCRIPTEN__
+		}
+		delete d_heap;
+	});
+#else
 	}
+#endif
 }
 
 
@@ -3251,7 +3522,15 @@ static const char* film_profile_labels[] = {
 static void environment_dialog(void *arg)
 {
 	// Create dialog
+	// Web port (see ../../WEB_PORT_PLAN.md, M4c-ii; player_dialog() has the
+	// fuller explanation): d is heap-allocated and aliased by reference
+	// under Emscripten.
+#ifdef __EMSCRIPTEN__
+	dialog *d_heap = new dialog();
+	dialog &d = *d_heap;
+#else
 	dialog d;
+#endif
 	vertical_placer *placer = new vertical_placer;
 	w_title *w_header = new w_title("ENVIRONMENT SETTINGS");
 	placer->dual_add(w_header, d);
@@ -3359,7 +3638,12 @@ static void environment_dialog(void *arg)
 
 	// Run dialog
 
+#ifdef __EMSCRIPTEN__
+	run_dialog_cooperatively(d_heap, [=](int result) {
+		if (result == 0) {	// Accepted
+#else
 	if (d.run() == 0) {	// Accepted
+#endif
 		bool changed = false;
 
 #ifndef MAC_APP_STORE
@@ -3469,7 +3753,13 @@ static void environment_dialog(void *arg)
 
 		if (changed || saves_changed)
 			write_preferences();
+#ifdef __EMSCRIPTEN__
+		}
+		delete d_heap;
+	});
+#else
 	}
+#endif
 }
 
 
@@ -5214,3 +5504,17 @@ const char* get_hotkey_binding(int hotkey, int type)
 
 	return "";
 }
+
+#ifdef __EMSCRIPTEN__
+#include <emscripten/emscripten.h>
+// Web port temporary test hook (see ../../WEB_PORT_PLAN.md, M4c-ii): calls
+// player_dialog() directly (it ignores its arg), for testing the nested-
+// dialog-stack mechanism from Node -- meant to be called a tick or two
+// after web_test_open_preferences(), while Preferences is still the active
+// cooperative dialog, so this pushes a real nested entry exactly like a
+// real PLAYER-button click would. Not reachable from any real code path.
+extern "C" EMSCRIPTEN_KEEPALIVE void web_test_open_player_dialog(void)
+{
+	player_dialog(nullptr);
+}
+#endif

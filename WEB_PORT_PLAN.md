@@ -1376,10 +1376,55 @@ here is implicit, not explicit permission to redistribute.
         game proceeds — the complete flow, confirmed deterministically,
         with no coordinate guessing involved.
       - **Not yet confirmed in a real browser.**
-  - [ ] **Remaining, not yet converted**: ~34 other `dialog::run()` call
-        sites (every Preferences sub-dialog, alerts, Load/Save, network
-        game dialogs, and a handful more) — same proven pattern, applied
-        per call site, in progress.
+  - [x] **All 12 Preferences sub-dialogs converted** (`preferences.cpp`):
+        `player_dialog`, `signup_dialog`, `online_dialog`, `crosshair_dialog`,
+        `software_rendering_options_dialog`, `graphics_dialog`, `sound_dialog`,
+        `mouse_custom_dialog`, `controller_details_dialog`, `controls_dialog`,
+        `plugins_dialog`, `environment_dialog` — the complete set the user
+        confirmed all shared the same hang. Used a leaner variant of the
+        `handle_preferences()` pattern to keep the diff size sane across a
+        dozen large dialogs: `d` is heap-allocated and aliased via a
+        `dialog &d = *d_heap;` reference under `__EMSCRIPTEN__` so the
+        (unchanged either way) widget-construction code doesn't need
+        duplicating — only the small `if (d.run() == 0) { ... }` head/tail
+        is `#ifdef`-branched, sharing the body between both platforms'
+        versions of the block.
+      - **Found and fixed a second correctness issue along the way**: three
+        internal widget callbacks (`graphics_dialog`'s `override_fov_w`
+        callback, `sound_dialog`'s `hrtf_enable_callback`, `controls_dialog`'s
+        `update_swim_w`) captured other local widget pointers `[&]`
+        (by reference) — safe originally, since native's blocking `d.run()`
+        keeps the enclosing function's stack frame alive for the dialog's
+        whole lifetime, but the cooperative version returns immediately, so
+        those references would dangle by the time the callback actually
+        fires. Changed to `[=]` (by-value capture of the pointers
+        themselves, which stay valid for the dialog's lifetime either way)
+        — safe and correct on both platforms unconditionally, no `#ifdef`
+        needed for this part.
+      - Two dialogs (`crosshair_dialog`'s `if`/`else`, `plugins_dialog`)
+        needed the completion lambda marked `mutable` (reassigns
+        by-value-captured locals like `theme_plugin` in their bodies) —
+        caught immediately by the compiler, not a runtime surprise.
+      - **Verified end-to-end in the Node harness**, including the case
+        that actually matters most here — real nesting: a new
+        `web_test_open_player_dialog()` hook calls `player_dialog()`
+        directly a couple of frames after `web_test_open_preferences()`,
+        i.e. while Preferences is still the active cooperative dialog,
+        exactly like a real PLAYER-button click. Both calls returned
+        immediately with no hang, and the engine kept running cleanly for
+        11+ further seconds with *both* dialogs stacked and being pumped —
+        confirming the nested-dialog-stack fix (see above) actually works,
+        not just compiles.
+      - **Not yet confirmed in a real browser.**
+  - [ ] **Remaining, not yet converted**: ~22 other `dialog::run()` call
+        sites outside `preferences.cpp` — alerts (`csalerts_sdl.cpp`, means
+        *any* error message still hangs), Load/Save (`FileHandler.cpp`,
+        `QuickSave.cpp`), network game dialogs (`network_dialogs.cpp`,
+        `network_dialog_widgets_sdl.cpp`, `Metaserver/*.cpp`), and a few
+        more in `shell.cpp`/`interface.cpp`/`Statistics.cpp`/`sdl_widgets.cpp`
+        — same proven pattern (including the `[&]`→`[=]` internal-callback
+        check, worth re-checking per dialog rather than assuming absence),
+        applied per call site, not yet started.
 - [ ] **M5 — Audio**
 - [ ] **M6 — Save games / prefs persistence**
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)
