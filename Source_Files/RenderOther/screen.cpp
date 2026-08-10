@@ -1132,6 +1132,26 @@ static void change_screen_mode(int width, int height, int depth, bool nogl, bool
 
 bool get_auto_resolution_size(short *w, short *h, struct screen_mode_data *mode)
 {
+#ifdef __EMSCRIPTEN__
+	// Web port (see ../../WEB_PORT_PLAN.md, M4h): this function's normal
+	// logic sizes gameplay to whatever Screen::instance()->ModeWidth/Height(0)
+	// resolved to at startup, which comes from SDL_GetDesktopDisplayMode()
+	// -- backed, under Emscripten's real SDL2 backend, by
+	// emscripten_get_screen_size() (the physical monitor resolution). That
+	// has no relationship to the actual <canvas> element's size embedded
+	// in the page (this port's game.html canvas sits below other page
+	// content, not fullscreen) -- confirmed via real-browser testing to
+	// render gameplay as one distorted frame that doesn't fill the canvas,
+	// and to apparently leave the canvas the wrong size for the menu on
+	// return. The menu sidesteps this problem entirely by forcing a fixed
+	// 640x480 "virtual" resolution regardless of screen_mode (see
+	// change_screen_mode()'s force_menu handling), which is already known
+	// to scale correctly to the real canvas -- so for gameplay too, just
+	// skip the auto-detection and let the caller fall back to the
+	// explicit screen_mode.width/height (defaults to that same 640x480)
+	// instead of a monitor-sized guess.
+	return false;
+#endif
 	if (screen_mode.auto_resolution)
 	{
 		short width = Screen::instance()->ModeWidth(0);

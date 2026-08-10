@@ -1478,7 +1478,52 @@ here is implicit, not explicit permission to redistribute.
         the parent menu image at the top-left corner as their background —
         likely the same resolution/canvas mismatch leaving stale pixel
         content visible.
-      - None of these investigated in depth yet — flagged, not fixed.
+  - [x] **Root cause found for the resolution/distortion cluster (bugs 1-3
+        above), user asked to investigate this specifically over the fade
+        theory**: `change_screen_mode()` forces the *menu* to a fixed
+        640x480 "virtual" resolution regardless of `screen_mode`
+        (`force_menu` branch) — proven to scale correctly to the real
+        canvas (menus render fine). Gameplay instead uses
+        `get_auto_resolution_size()`, which (when `screen_mode.auto_resolution`
+        is true, the default) sizes to `Screen::instance()->ModeWidth/Height(0)`
+        — populated once at startup from `SDL_GetDesktopDisplayMode()`.
+        Under Emscripten's real SDL2 backend (this project cross-builds
+        genuine upstream SDL2 via vcpkg, not Emscripten's own `-sUSE_SDL=2`
+        port), that call is backed by `emscripten_get_screen_size()` — the
+        *physical monitor resolution* — which has no relationship at all
+        to the actual `<canvas>` element's size embedded in `game.html`
+        (the canvas sits below other page content, not fullscreen, and
+        isn't even given explicit CSS dimensions). Gameplay was almost
+        certainly being sized to the user's full monitor resolution while
+        actually rendering into a much smaller/differently-shaped canvas —
+        directly explaining "renders distorted, doesn't fill canvas," and
+        plausibly the "only one frame" freeze too (a resolution-mismatch-
+        triggered failure in the size-change-detection logic in
+        `render_screen()` is a reasonable next suspect if this alone
+        doesn't fully fix it).
+      - **Considered and rejected**: replacing `SDL_GetDesktopDisplayMode()`
+        with a direct `emscripten_get_canvas_element_size()` query. Real
+        risk found on inspection: `Screen::Initialize()` (where this runs)
+        executes once at startup, *before* SDL has ever called
+        `SDL_CreateWindow()`/set the canvas's `width`/`height` attributes —
+        an HTML canvas defaults to 300x150 until something sets it
+        explicitly, so querying "the canvas's current size" at that point
+        is circular (nothing has decided what it should be yet).
+      - **Fixed instead, more conservatively**: `get_auto_resolution_size()`
+        just returns `false` immediately under `__EMSCRIPTEN__`, skipping
+        all monitor-size detection. Its caller already handles `false`
+        correctly by falling back to the explicit
+        `screen_mode.width`/`height` (defaults to 640x480, the exact value
+        already proven to work for the menu) instead of leaving `w`/`h`
+        touched with a bad guess. Lower risk than trying to correctly
+        reimplement auto-detection for a canvas that doesn't have a
+        well-defined "natural" size on this page at all.
+      - Compiles clean; **not yet confirmed in a real browser** — this is a
+        rendering/resolution fix with no meaningful way to verify visually
+        via the headless Node harness (no real pixel output there), so
+        real-browser retesting is the only way to know if this is
+        complete, or if "only one frame renders" needs a further,
+        separate fix on top of this.
 - [ ] **M5 — Audio**
 - [ ] **M6 — Save games / prefs persistence**
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)
