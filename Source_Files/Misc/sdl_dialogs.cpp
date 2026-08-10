@@ -2287,44 +2287,60 @@ int dialog::run(bool intro_exit_sounds)
 // the dialog actually closes. Callers that used to do
 // `int result = d.run(); ...use result...` need restructuring to
 // `run_dialog_cooperatively(&d, [](int result){ ...use result... });`
-// instead -- only handle_preferences() has been converted so far (the one
-// confirmed hanging in real-browser testing); every other dialog::run()
-// call site (~28, per M4c-i's research) still blocks and will still hang
-// the tab until it gets the same treatment.
+// instead.
+//
+// Dialogs nest (e.g. Preferences opens PLAYER/GRAPHICS/etc. from a widget
+// callback triggered *during* its own pump_once(), exactly like
+// dialog::start()'s own top_dialog/parent_dialog chain assumes) so this is a
+// stack, not a single slot -- only the top (innermost, most recently
+// opened) entry is ever pumped, matching real modal nesting: an outer
+// dialog is effectively paused while an inner one is open on top of it.
 namespace {
-	dialog *g_cooperative_dialog = nullptr;
-	std::function<void(int)> g_cooperative_dialog_on_finish;
-	bool g_cooperative_dialog_intro_exit_sounds = true;
+	struct CooperativeDialogEntry {
+		dialog *d;
+		std::function<void(int)> on_finish;
+		bool intro_exit_sounds;
+	};
+	std::vector<CooperativeDialogEntry> g_cooperative_dialog_stack;
 }
 
 bool cooperative_dialog_active(void)
 {
-	return g_cooperative_dialog != nullptr;
+	return !g_cooperative_dialog_stack.empty();
 }
 
 void run_dialog_cooperatively(dialog *d, std::function<void(int)> on_finish, bool intro_exit_sounds)
 {
-	assert(!cooperative_dialog_active());
 	d->start(intro_exit_sounds);
-	g_cooperative_dialog = d;
-	g_cooperative_dialog_on_finish = std::move(on_finish);
-	g_cooperative_dialog_intro_exit_sounds = intro_exit_sounds;
+	g_cooperative_dialog_stack.push_back({d, std::move(on_finish), intro_exit_sounds});
 }
 
 void update_cooperative_dialog(void)
 {
-	if (!g_cooperative_dialog)
+	if (g_cooperative_dialog_stack.empty())
 		return;
 
-	if (!g_cooperative_dialog->pump_once())
+	// Copy the pointer out (not a reference into the vector) before
+	// pumping: if the pump opens a nested dialog, run_dialog_cooperatively()
+	// above pushes onto this same vector mid-call, which can reallocate it.
+	size_t depth_before = g_cooperative_dialog_stack.size();
+	dialog *d = g_cooperative_dialog_stack.back().d;
+	bool done = d->pump_once();
+
+	// A nested dialog was opened during this pump -- it now owns input
+	// (matches top_dialog); `d` is still open underneath, just not on top,
+	// and isn't finished regardless of what pump_once() returned for it.
+	if (g_cooperative_dialog_stack.size() != depth_before)
 		return;
 
-	int result = g_cooperative_dialog->finish(g_cooperative_dialog_intro_exit_sounds);
-	auto on_finish = std::move(g_cooperative_dialog_on_finish);
-	g_cooperative_dialog = nullptr;
-	g_cooperative_dialog_on_finish = nullptr;
-	if (on_finish)
-		on_finish(result);
+	if (!done)
+		return;
+
+	CooperativeDialogEntry finished = std::move(g_cooperative_dialog_stack.back());
+	g_cooperative_dialog_stack.pop_back();
+	int result = finished.d->finish(finished.intro_exit_sounds);
+	if (finished.on_finish)
+		finished.on_finish(result);
 }
 #endif
 
@@ -2393,7 +2409,21 @@ void dialog::start(bool play_sound)
 bool dialog::process_events()
 {
 	SDL_Event e;
-	if (SDL_WaitEventTimeout(&e, 30))
+#ifdef __EMSCRIPTEN__
+	// Web port (see ../../WEB_PORT_PLAN.md, M4c-ii and M4h): SDL_WaitEventTimeout
+	// is a genuine blocking wait, which can't safely resume without a real
+	// OS thread or Asyncify (this build uses neither -- see the identical
+	// reasoning for main_event_loop_iteration()'s own former use of this
+	// same call, in shell.cpp). Whether or not this specific call site
+	// still hangs when called cooperatively (via pump_once(), one call per
+	// browser frame, versus the tight native run() loop calling it far more
+	// often) wasn't fully pinned down empirically, but the risk and the fix
+	// are identical either way -- just poll non-blockingly instead.
+	bool got_event = SDL_PollEvent(&e);
+#else
+	bool got_event = SDL_WaitEventTimeout(&e, 30);
+#endif
+	if (got_event)
 	{
 		event(e);
 		while (!done && SDL_PollEvent(&e))

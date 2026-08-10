@@ -741,6 +741,16 @@ static void main_event_loop_iteration(short game_state)
 		update_cooperative_dialog();
 		return;
 	}
+	// Web port (see ../../WEB_PORT_PLAN.md, M4h): same reasoning as the
+	// cooperative-dialog check above -- a chapter/briefing screen (e.g.
+	// right after "Begin New Game") needs exclusive input while it's
+	// showing, same as it would if try_and_display_chapter_screen() were
+	// still blocking synchronously.
+	if (chapter_screen_active())
+	{
+		update_chapter_screen();
+		return;
+	}
 #endif
 
 	uint64_t cur_time = machine_tick_count();

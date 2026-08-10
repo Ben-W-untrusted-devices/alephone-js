@@ -1281,11 +1281,105 @@ here is implicit, not explicit permission to redistribute.
         own open/close round trip (via RETURN) is the one confirmed,
         complete, working path; converting the rest is follow-up work,
         applying the same now-proven pattern per call site.
-      - **Not yet confirmed in a real browser** — Node testing (via the
-        direct `ccall` hook) proves the open path doesn't hang and the
-        dialog stays alive across many frames, but never simulated an
-        actual RETURN-button click, so closing the dialog and returning to
-        the main menu is unverified outside of code review.
+      - **User-confirmed in a real browser**: Preferences now opens and its
+        RETURN button correctly closes it back to the main menu.
+  - [x] **User confirmed the predicted follow-up**: every sub-menu inside
+        Preferences (PLAYER/GRAPHICS/SOUND/CONTROLS/ENVIRONMENT/PLUGINS) has
+        the same hang, plus a second, independent bug: "Begin New Game" on
+        the main menu also locks up. Asked to search the whole codebase for
+        the same root-cause family before fixing more one at a time.
+  - [x] **Systematic search performed** — full results (counts, file list,
+        one-line purpose per category) given to the user before proceeding;
+        found four *additional* blocking-construct families beyond
+        `dialog::run()` itself, two of which turned out to be directly
+        responsible for "Begin New Game":
+      1. Every other `dialog::run()` call site (~35 total across ~13 files,
+         via `grep -rn "\.run("`) — Preferences' own 12 sub-dialogs
+         (`player_dialog`, `online_dialog`, `graphics_dialog`, `sound_dialog`,
+         `controls_dialog`, `plugins_dialog`, `environment_dialog`, plus
+         nested ones underneath), alerts (`csalerts_sdl.cpp` — meaning *any*
+         error message would hang), Load/Save (`FileHandler.cpp`,
+         `QuickSave.cpp`), network game dialogs, and a handful more in
+         `shell.cpp`/`interface.cpp`/`Statistics.cpp`/`sdl_widgets.cpp`/
+         `preferences_widgets_sdl.cpp`.
+      2. `wait_for_click_or_keypress()` (`CSeries/csmisc_sdl.cpp`) — its own
+         independent blocking wait (outer `while` loop *and* its own
+         `SDL_WaitEventTimeout`), called from `try_and_display_chapter_screen()`
+         for the level chapter/briefing screen shown right after "Begin New
+         Game".
+      3. `ScenarioChooser::run()` (`ScenarioChooser.cpp`) — its own blocking
+         `while` + `SDL_Delay(30)` loop, in a *separate* class with its own
+         `SDL_CreateWindow()` call. Investigated reachability: only invoked
+         when `chooser.num_scenarios() > 1` (`shell.cpp`), and the web
+         port's upload flow provisions exactly one scenario per session —
+         so this is very unlikely to ever execute in practice. **Deferred**,
+         documented rather than converted, on that basis.
+      4. **Found while tracing "Begin New Game" further, not part of the
+         original search**: `full_fade()` (`RenderOther/fades.cpp`) has its
+         own un-yielding `while (update_fades()) { ...; }` loop with no
+         `SDL_PollEvent`/yield at all — and it's called *constantly*
+         throughout the UI (every menu transition, every dialog, chapter
+         screens), not gated behind any specific menu item. Checked actual
+         fade durations: `_long_cinematic_fade_in` (used right in the
+         chapter-screen code) is 1.5s, `_cinematic_fade_out` is 0.5s — a
+         real, multi-second freeze on its own, before even reaching #2
+         above. Also `scroll_full_screen_pict_resource_from_scenario()`
+         (`RenderOther/images.cpp`) — its own `do`/`while` loop for
+         scrolling a chapter picture taller/wider than the screen (e.g.
+         text-heavy briefings), found while working out exactly what
+         "Begin New Game" hits.
+  - [x] **All except the deferred `ScenarioChooser` and the ~34 remaining
+        `dialog::run()` sites (still in progress) fixed**:
+      - **Nested-dialog bug fixed before it could bite**: the
+        `run_dialog_cooperatively()` mechanism from the Preferences fix
+        only tracked one active dialog globally — Preferences' own
+        sub-dialogs open *from inside* its already-running cooperative
+        pump (a widget callback triggered during `pump_once()`), which
+        would have silently lost track of the parent dialog. Changed to a
+        proper stack (`std::vector<CooperativeDialogEntry>`) before
+        converting anything else: `update_cooperative_dialog()` copies the
+        top entry's raw `dialog*` out before pumping (the vector can
+        reallocate mid-pump if pumping opens a nested dialog), and checks
+        whether the stack grew during that pump to detect nesting rather
+        than assuming the pumped dialog either finished or didn't.
+      - `dialog::process_events()`'s own internal `SDL_WaitEventTimeout`
+        (separate from the outer loop already handled by `pump_once()`)
+        also disabled for Emscripten, for consistency/defense-in-depth,
+        even though the specific Node repro that found the main-loop
+        version of this bug didn't happen to reproduce it here.
+      - **`full_fade()`**: reuses the existing `stop_fade()` (already does
+        exactly "jump to final transparency, deactivate") for the
+        Emscripten path instead of looping — every caller's assumption
+        that the fade is fully applied by the time the call returns still
+        holds, just without the animation. A single, ~7-line change
+        protects every one of `full_fade()`'s call sites throughout the UI
+        at once, unlike the per-call-site dialog conversions.
+      - **`try_and_display_chapter_screen()`**: converted to an explicit
+        two-phase (`Scrolling`, then `Waiting`) cooperative state machine
+        (new `chapter_screen_active()`/`update_chapter_screen()`, wired
+        into `shell.cpp` exactly like the cooperative-dialog check),
+        reimplementing `scroll_full_screen_pict_resource_from_scenario()`'s
+        and `wait_for_click_or_keypress()`'s logic inline rather than
+        skipping them — unlike fades, scrolling and the click-wait involve
+        actual content (chapter text, letting the player continue), so
+        skipping would be a real feature loss, not just lost polish.
+        Native's version of the function kept byte-for-byte unchanged in
+        its own `#else` branch, same pattern as `handle_preferences()`.
+      - **Verified end-to-end in the Node harness** via a new
+        `web_test_begin_new_game()` test hook (calls
+        `do_menu_item_command(mInterface, iNewGame, false)` directly) plus
+        `web_test_chapter_screen_active()` (polls the new state flag): the
+        call returns immediately, `chapter_screen_active` correctly stays
+        `1` for ~9 real seconds (matching non-text-block chapter screens'
+        10s auto-timeout) while the engine keeps running with no hang at
+        all, then correctly drops to `0` once the timeout fires and the
+        game proceeds — the complete flow, confirmed deterministically,
+        with no coordinate guessing involved.
+      - **Not yet confirmed in a real browser.**
+  - [ ] **Remaining, not yet converted**: ~34 other `dialog::run()` call
+        sites (every Preferences sub-dialog, alerts, Load/Save, network
+        game dialogs, and a handful more) — same proven pattern, applied
+        per call site, in progress.
 - [ ] **M5 — Audio**
 - [ ] **M6 — Save games / prefs persistence**
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)

@@ -3273,6 +3273,141 @@ static void handle_interface_menu_screen_click(
 	}
 }
 
+#ifdef __EMSCRIPTEN__
+// Web port (see ../../WEB_PORT_PLAN.md, M4h): the native version of
+// try_and_display_chapter_screen() (kept, unchanged, in the #else branch
+// below) calls two more blocking constructs found while root-causing
+// "Begin New Game locks the screen": scroll_full_screen_pict_resource_from_scenario()
+// (images.cpp -- its own do/while loop for scrolling a chapter picture
+// taller/wider than the screen, e.g. a text-heavy briefing) and
+// wait_for_click_or_keypress() (csmisc_sdl.cpp -- its own while loop
+// waiting up to 10s, or indefinitely for text_block screens, for the user
+// to act). Both are real, both matter for content (unlike full_fade(),
+// skipping the animation there costs nothing but polish -- skipping the
+// scroll or the wait would mean losing chapter text or never letting the
+// player continue), so both are reimplemented here as an explicit
+// two-phase (Scrolling, then Waiting) state machine, pumped one step per
+// browser frame by update_chapter_screen() (wired into shell.cpp's
+// main_event_loop_iteration) instead of blocking. Everything before the
+// scroll/wait (fades -- now instant via full_fade()'s own Emscripten path,
+// drawing, sound) stays synchronous, since none of it blocks anymore.
+namespace {
+	enum class ChapterScreenPhase { Scrolling, Waiting };
+	struct ChapterScreenState {
+		bool active = false;
+		ChapterScreenPhase phase = ChapterScreenPhase::Waiting;
+		short existing_state = 0;
+		short pict_resource_number = 0;
+		std::shared_ptr<SoundPlayer> soundPlayer;
+		bool text_block = false;
+		uint32 wait_ticks = 0;
+		uint64_t wait_start_tick = 0;
+		std::unique_ptr<SDL_Surface, decltype(&SDL_FreeSurface)> scroll_surface{nullptr, SDL_FreeSurface};
+		bool scroll_horizontal = false;
+		bool scroll_vertical = false;
+		int picture_width = 0, picture_height = 0;
+		uint64_t scroll_start_tick = 0;
+	};
+	ChapterScreenState g_chapter_screen;
+
+	// Mirrors images.cpp's own private SCROLLING_SPEED (not accessible from
+	// here) -- same value, same meaning.
+	const int32 kChapterScreenScrollingSpeed = MACHINE_TICKS_PER_SECOND / 20;
+}
+
+bool chapter_screen_active(void)
+{
+	return g_chapter_screen.active;
+}
+
+static void finish_chapter_screen(void)
+{
+	interface_fade_out(g_chapter_screen.pict_resource_number, false);
+	if (g_chapter_screen.soundPlayer)
+		g_chapter_screen.soundPlayer->AskStop();
+	g_chapter_screen.soundPlayer.reset();
+	g_chapter_screen.scroll_surface.reset();
+	game_state.state = g_chapter_screen.existing_state;
+	g_chapter_screen.active = false;
+}
+
+void update_chapter_screen(void)
+{
+	if (!g_chapter_screen.active)
+		return;
+
+	if (g_chapter_screen.phase == ChapterScreenPhase::Scrolling)
+	{
+		const int screen_width = 640, screen_height = 480; // matches images.cpp's own hardcoded reference size
+		int32 delta = (machine_tick_count() - g_chapter_screen.scroll_start_tick) /
+			(g_chapter_screen.text_block ? (2 * kChapterScreenScrollingSpeed) : kChapterScreenScrollingSpeed);
+		bool done = false;
+		if (g_chapter_screen.scroll_horizontal && delta > g_chapter_screen.picture_width - screen_width)
+		{
+			delta = g_chapter_screen.picture_width - screen_width;
+			done = true;
+		}
+		if (g_chapter_screen.scroll_vertical && delta > g_chapter_screen.picture_height - screen_height)
+		{
+			delta = g_chapter_screen.picture_height - screen_height;
+			done = true;
+		}
+
+		SDL_Rect src_rect{
+			g_chapter_screen.scroll_horizontal ? delta : 0,
+			g_chapter_screen.scroll_vertical ? delta : 0,
+			g_chapter_screen.scroll_horizontal ? screen_width : g_chapter_screen.picture_width,
+			g_chapter_screen.scroll_vertical ? screen_height : g_chapter_screen.picture_height
+		};
+		SDL_Rect dst_rect{0, 0, screen_width, screen_height};
+		_set_port_to_intro();
+		SDL_BlitSurface(g_chapter_screen.scroll_surface.get(), &src_rect, draw_surface, &dst_rect);
+		_restore_port();
+		draw_intro_screen();
+
+		bool aborted = false;
+		SDL_Event event;
+		if (SDL_PollEvent(&event))
+		{
+			switch (event.type)
+			{
+				case SDL_MOUSEBUTTONDOWN:
+				case SDL_KEYDOWN:
+				case SDL_CONTROLLERBUTTONDOWN:
+					aborted = true;
+					break;
+			}
+		}
+
+		if (done || aborted)
+		{
+			g_chapter_screen.phase = ChapterScreenPhase::Waiting;
+			g_chapter_screen.wait_start_tick = machine_tick_count();
+		}
+		return;
+	}
+
+	// Waiting phase
+	bool got_click_or_key = false;
+	SDL_Event event;
+	if (SDL_PollEvent(&event))
+	{
+		switch (event.type)
+		{
+			case SDL_MOUSEBUTTONDOWN:
+			case SDL_KEYDOWN:
+			case SDL_CONTROLLERBUTTONDOWN:
+				got_click_or_key = true;
+				break;
+		}
+	}
+	bool timed_out = g_chapter_screen.wait_ticks != (uint32)-1 &&
+		(machine_tick_count() - g_chapter_screen.wait_start_tick >= g_chapter_screen.wait_ticks);
+
+	if (got_click_or_key || timed_out)
+		finish_chapter_screen();
+}
+
 /* Note that this is modal. This sucks... */
 static void try_and_display_chapter_screen(
 	short level,
@@ -3281,7 +3416,7 @@ static void try_and_display_chapter_screen(
 {
 	if (Movie::instance()->IsRecording() || !shell_options.replay_directory.empty())
 		return;
-	
+
 	short pict_resource_number = get_screen_data(_display_chapter_heading)->screen_base + level;
 	/* If the picture exists... */
 	if (scenario_picture_exists(pict_resource_number))
@@ -3291,7 +3426,7 @@ static void try_and_display_chapter_screen(
 
 		Music::instance()->StopInGameMusic();
 		SoundManager::instance()->StopAllSounds();
-		
+
 		/* This will NOT work if the initial level entered has a chapter screen, which is why */
 		/*  we perform this check. (The interface_color_table is not valid...) */
 		if(interface_table_is_valid)
@@ -3301,18 +3436,18 @@ static void try_and_display_chapter_screen(
 		}
 
 		change_screen_mode(_screentype_chapter);
-		
+
 		/* Fade the screen to black.. */
 		assert(!current_picture_clut);
 		current_picture_clut= calculate_picture_clut(CLUTSource_Scenario,pict_resource_number);
 		current_picture_clut_depth= interface_bit_depth;
-		
+
 		if (current_picture_clut)
 		{
 			LoadedResource SoundRsrc;
 
 			/* slam the entire clut to black, now. */
-			if (interface_bit_depth==8) 
+			if (interface_bit_depth==8)
 			{
 				assert_world_color_table(current_picture_clut, (struct color_table *) NULL);
 			}
@@ -3330,23 +3465,122 @@ static void try_and_display_chapter_screen(
 				parameters.pitch = pitch * 1.f / _normal_frequency;
 				soundPlayer = SoundManager::instance()->PlaySound(SoundRsrc, parameters);
 			}
-			
+
 			/* Fade in.... */
-			assert(current_picture_clut);	
+			assert(current_picture_clut);
 			full_fade(_long_cinematic_fade_in, current_picture_clut);
-			
+
+			g_chapter_screen.existing_state = existing_state;
+			g_chapter_screen.pict_resource_number = pict_resource_number;
+			g_chapter_screen.soundPlayer = soundPlayer;
+			g_chapter_screen.text_block = text_block;
+			g_chapter_screen.wait_ticks = text_block ? (uint32)-1 : 10 * MACHINE_TICKS_PER_SECOND;
+			g_chapter_screen.active = true;
+
+			LoadedResource rsrc;
+			get_picture_resource_from_scenario(pict_resource_number, rsrc);
+			auto s = picture_to_surface(rsrc);
+			if (s && (s->w > 640 || s->h > 480))
+			{
+				g_chapter_screen.scroll_horizontal = s->w > 640;
+				g_chapter_screen.scroll_vertical = s->h > 480;
+				g_chapter_screen.picture_width = s->w;
+				g_chapter_screen.picture_height = s->h;
+				g_chapter_screen.scroll_surface = std::move(s);
+				g_chapter_screen.scroll_start_tick = machine_tick_count();
+				g_chapter_screen.phase = ChapterScreenPhase::Scrolling;
+				SDL_FlushEvents(SDL_FIRSTEVENT, SDL_LASTEVENT);
+			}
+			else
+			{
+				g_chapter_screen.phase = ChapterScreenPhase::Waiting;
+				g_chapter_screen.wait_start_tick = machine_tick_count();
+			}
+			// game_state.state is restored, and current_picture_clut freed,
+			// by finish_chapter_screen() once the cooperative wait actually
+			// completes -- this function returns immediately while the
+			// chapter screen is still showing.
+			return;
+		}
+		game_state.state= existing_state;
+	}
+}
+#else
+/* Note that this is modal. This sucks... */
+static void try_and_display_chapter_screen(
+	short level,
+	bool interface_table_is_valid,
+	bool text_block)
+{
+	if (Movie::instance()->IsRecording() || !shell_options.replay_directory.empty())
+		return;
+
+	short pict_resource_number = get_screen_data(_display_chapter_heading)->screen_base + level;
+	/* If the picture exists... */
+	if (scenario_picture_exists(pict_resource_number))
+	{
+		short existing_state= game_state.state;
+		game_state.state= _display_chapter_heading;
+
+		Music::instance()->StopInGameMusic();
+		SoundManager::instance()->StopAllSounds();
+
+		/* This will NOT work if the initial level entered has a chapter screen, which is why */
+		/*  we perform this check. (The interface_color_table is not valid...) */
+		if(interface_table_is_valid)
+		{
+			full_fade(_cinematic_fade_out, interface_color_table);
+			paint_window_black();
+		}
+
+		change_screen_mode(_screentype_chapter);
+
+		/* Fade the screen to black.. */
+		assert(!current_picture_clut);
+		current_picture_clut= calculate_picture_clut(CLUTSource_Scenario,pict_resource_number);
+		current_picture_clut_depth= interface_bit_depth;
+
+		if (current_picture_clut)
+		{
+			LoadedResource SoundRsrc;
+
+			/* slam the entire clut to black, now. */
+			if (interface_bit_depth==8)
+			{
+				assert_world_color_table(current_picture_clut, (struct color_table *) NULL);
+			}
+			full_fade(_start_cinematic_fade_in, current_picture_clut);
+
+			/* Draw the picture */
+			draw_full_screen_pict_resource_from_scenario(pict_resource_number);
+			draw_intro_screen();
+
+			std::shared_ptr<SoundPlayer> soundPlayer;
+			if (get_sound_resource_from_scenario(pict_resource_number,SoundRsrc))
+			{
+				_fixed pitch = (shapes_file_is_m1() && level == 101) ? _m1_high_frequency : _normal_frequency;
+				SoundParameters parameters;
+				parameters.pitch = pitch * 1.f / _normal_frequency;
+				soundPlayer = SoundManager::instance()->PlaySound(SoundRsrc, parameters);
+			}
+
+			/* Fade in.... */
+			assert(current_picture_clut);
+			full_fade(_long_cinematic_fade_in, current_picture_clut);
+
 			scroll_full_screen_pict_resource_from_scenario(pict_resource_number, text_block);
 
 			wait_for_click_or_keypress(text_block ? -1 : 10*MACHINE_TICKS_PER_SECOND);
-			
+
 			/* Fade out! (Pray) */
 			interface_fade_out(pict_resource_number, false);
-			
+
 			if (soundPlayer) soundPlayer->AskStop();
 		}
 		game_state.state= existing_state;
 	}
 }
+#endif
 
 /* ------------ interface fade code */
 /* Be aware that we could try to change bit depths before a fade is completed. */
@@ -3795,5 +4029,23 @@ size_t should_restore_game_networked(FileSpecifier& file)
 extern "C" EMSCRIPTEN_KEEPALIVE void web_test_open_preferences(void)
 {
 	do_preferences();
+}
+
+// Web port temporary test hook: same purpose as web_test_open_preferences()
+// above, for "Begin New Game" (do_menu_item_command's iNewGame case) -- the
+// other real-browser-confirmed hang, root-caused to full_fade() and
+// try_and_display_chapter_screen()'s scroll/wait both blocking.
+extern "C" EMSCRIPTEN_KEEPALIVE void web_test_begin_new_game(void)
+{
+	do_menu_item_command(mInterface, iNewGame, false);
+}
+
+// Web port temporary test hook: reports whether a chapter screen is still
+// cooperatively active (see interface.h) and how many heartbeats' worth of
+// real time have passed since main() started, so the Node harness can poll
+// this instead of guessing how long to wait.
+extern "C" EMSCRIPTEN_KEEPALIVE int web_test_chapter_screen_active(void)
+{
+	return chapter_screen_active() ? 1 : 0;
 }
 #endif

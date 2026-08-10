@@ -436,13 +436,32 @@ void full_fade(
 	struct color_table *original_color_table)
 {
 	struct color_table animated_color_table;
-	
+
 	obj_copy(animated_color_table, *original_color_table);
-	
+
 	explicit_start_fade(type, original_color_table, &animated_color_table);
+#ifdef __EMSCRIPTEN__
+	// Web port (see ../../WEB_PORT_PLAN.md, M4c-ii/M4h): update_fades()'s
+	// timing is wall-clock based (see its own comment above), so animating
+	// smoothly here would mean spreading calls across multiple browser
+	// frames, like the dialog/menu-click conversions elsewhere in this
+	// port -- a much bigger change for a purely cosmetic effect, and
+	// full_fade() is called from dozens of places throughout the UI.
+	// Instead, jump straight to the fade's final state in one step (reusing
+	// stop_fade(), which already does exactly this for its own purpose):
+	// every caller's assumption that the color table reflects the fade's
+	// end state by the time this call returns still holds, just without
+	// the animation. The un-yielding while loop below, bounded only by
+	// definition->period (up to 1.5s for _long_cinematic_fade_in, used
+	// right before "Begin New Game"'s chapter screen), was a real,
+	// reproducible multi-second tab freeze -- worse than just not
+	// animating, since the browser can't do anything at all while it spins.
+	stop_fade();
+#else
 	while (update_fades())
 		Music::instance()->Idle();
 		;
+#endif
 }
 
 void gamma_correct_color_table(

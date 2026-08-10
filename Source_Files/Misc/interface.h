@@ -276,6 +276,15 @@ void portable_process_screen_click(short x, short y, bool cheatkeys_down);
 bool menu_click_tracking_active(void);
 void update_menu_click_tracking_motion(int x, int y);
 void finish_menu_click_tracking(int x, int y);
+#ifdef __EMSCRIPTEN__
+// Web port (see ../../WEB_PORT_PLAN.md, M4h): same idea as the menu-click
+// tracking above, for try_and_display_chapter_screen()'s chapter/briefing
+// screens (shown e.g. right after "Begin New Game") -- see the comment on
+// its implementation in interface.cpp for why (scroll_full_screen_pict_resource_from_scenario()
+// and wait_for_click_or_keypress() both block).
+bool chapter_screen_active(void);
+void update_chapter_screen(void);
+#endif
 void process_main_menu_highlight_advance(bool reverse);
 void process_main_menu_highlight_select(bool cheatkeys_down);
 void draw_menu_button_for_command(short index);
