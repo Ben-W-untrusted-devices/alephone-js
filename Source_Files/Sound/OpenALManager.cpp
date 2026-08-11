@@ -19,6 +19,54 @@
 #include "OpenALManager.h"
 #include "Logging.h"
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#include <emscripten/emscripten.h>
+// Web port (see ../../WEB_PORT_PLAN.md, M5): diagnostic + safety net for a
+// still-reported "no sound" symptom after the non-loopback fallback below
+// engages successfully (no crash, no error) -- routes through
+// Module.printErr() rather than console.error() so it actually reaches the
+// page's #log panel (this project's primary debugging surface, since
+// Safari's dev tools have been unusable for this tab -- see game.html).
+// `AL` here is Emscripten's own OpenAL port's internal namespace
+// (emsdk/upstream/emscripten/src/lib/libopenal.js) -- accessible because
+// all JS library code and EM_JS code share one compiled-output scope, not
+// because it's an exported/public API; guarded with typeof/try-catch in
+// case that ever stops holding. libopenal.js already arms a one-time
+// resume-on-gesture listener when the context is created
+// (autoResumeAudioContext, wired into alcCreateContext), but only once, at
+// creation time -- if OpenALManager::Init() ever recreates the context
+// (e.g. a preferences change, see Init()'s own Shutdown()-and-recreate
+// path) after the page's last real user gesture, that one-time listener
+// has nothing left to fire on. This logs the actual state so the next
+// report is definitive rather than a guess, and arms one more redundant
+// listener as a safety net for exactly that recreation case.
+EM_JS(void, web_log_audio_context_state, (), {
+    try {
+        if (typeof AL === 'undefined' || !AL.currentCtx || !AL.currentCtx.audioCtx) {
+            Module.printErr('[audio] no current AL context to inspect');
+            return;
+        }
+        var ctx = AL.currentCtx.audioCtx;
+        Module.printErr('[audio] AudioContext state: ' + ctx.state + ' (sampleRate=' + ctx.sampleRate + ')');
+        if (ctx.state === 'suspended') {
+            var resumeOnce = function() {
+                ctx.resume().then(function() {
+                    Module.printErr('[audio] AudioContext resumed, state now: ' + ctx.state);
+                }).catch(function(e) {
+                    Module.printErr('[audio] AudioContext resume() rejected: ' + e);
+                });
+            };
+            for (var type of ['mousedown', 'keydown', 'touchstart']) {
+                document.addEventListener(type, resumeOnce, { once: true });
+            }
+        }
+    } catch (e) {
+        Module.printErr('[audio] web_log_audio_context_state failed: ' + e);
+    }
+});
+#endif
+
 bool OpenALManager::p_UsingLoopback = true;
 LPALCLOOPBACKOPENDEVICESOFT OpenALManager::alcLoopbackOpenDeviceSOFT;
 LPALCISRENDERFORMATSUPPORTEDSOFT OpenALManager::alcIsRenderFormatSupportedSOFT;
@@ -68,7 +116,16 @@ bool OpenALManager::Init(const AudioParameters& parameters) {
 	}
 
 	instance = new OpenALManager(parameters);
-	return instance->OpenDevice() && instance->LoadOptionalExtensions() && instance->GenerateSources() && instance->GenerateEffects();
+	bool success = instance->OpenDevice() && instance->LoadOptionalExtensions() && instance->GenerateSources() && instance->GenerateEffects();
+#ifdef __EMSCRIPTEN__
+	// Web port (see ../../WEB_PORT_PLAN.md, M5): OpenDevice() logs its own
+	// success/AudioContext-state diagnostics -- this just confirms whether
+	// the *whole* chain (LoadOptionalExtensions()/GenerateSources()/
+	// GenerateEffects() too) actually succeeded, since a false here is
+	// silently swallowed by SoundManager::SetStatus()'s caller.
+	logError("OpenALManager::Init() overall result: %s", success ? "success" : "FAILED");
+#endif
+	return success;
 }
 
 bool OpenALManager::LoadOptionalExtensions() {
@@ -330,6 +387,7 @@ bool OpenALManager::OpenDevice() {
 			return false;
 		}
 
+		web_log_audio_context_state();
 		return true;
 	}
 

@@ -2393,11 +2393,42 @@ static void transfer_to_new_level(
 			return;
 		}
 
+#ifdef __EMSCRIPTEN__
+		// Web port (see ../../WEB_PORT_PLAN.md, M5): try_and_display_chapter_screen()
+		// doesn't block under Emscripten -- the code that used to run only
+		// after the screen was dismissed (goto_level()/start_game()) raced
+		// ahead of it instead, same bug class as begin_game() (see its own
+		// comment for the fuller explanation) -- observed as a level
+		// transition ending in a permanently blank/frozen screen. Deferred
+		// into a completion callback instead; check_level_change() (this
+		// function's only caller) doesn't depend on transfer_to_new_level()
+		// completing synchronously, so this is safe to defer. entry is
+		// captured by value (a small POD struct, see map.h) since this
+		// function's stack frame is gone by the time a genuinely deferred
+		// callback would fire.
+		auto continue_level_change = [level_number, entry]() mutable {
+			bool success = goto_level(&entry, dynamic_world->player_count, nullptr);
+			set_keyboard_controller_status(true);
+			if (success) {
+				start_game(game_state.user, true);
+			} else {
+				display_loading_map_error();
+				finish_game(true);
+			}
+		};
+		if (!game_is_networked) {
+			try_and_display_chapter_screen(level_number, true, false, continue_level_change);
+		} else {
+			continue_level_change();
+		}
+		return;
+#else
 		if (!game_is_networked) try_and_display_chapter_screen(level_number, true, false);
 		success= goto_level(&entry, dynamic_world->player_count, nullptr);
 		set_keyboard_controller_status(true);
+#endif
 	}
-	
+
 	if(success)
 	{
 		start_game(game_state.user, true);

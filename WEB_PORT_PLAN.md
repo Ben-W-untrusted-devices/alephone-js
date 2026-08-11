@@ -1478,6 +1478,32 @@ here is implicit, not explicit permission to redistribute.
         the parent menu image at the top-left corner as their background —
         likely the same resolution/canvas mismatch leaving stale pixel
         content visible.
+      - [ ] **Slider still unresponsive after the resolution fix (M5)** --
+        re-reported in a real browser well after "resolution is correct"
+        was separately confirmed, so it's *not* simply downstream of that
+        bug as guessed above -- something more specific to sliders.
+        Re-read `w_slider::click()`/`mouse_move()`
+        (`sdl_widgets.cpp`) and `dialog::event()`'s `SDL_MOUSEMOTION`/
+        `SDL_MOUSEBUTTONDOWN` routing (`sdl_dialogs.cpp`) end to end --
+        structurally identical to button routing (which works), and
+        `process_events()` already drains the *whole* per-frame SDL event
+        queue (not just one event), so no obvious cooperative-dialog-
+        conversion regression there. Leading hypothesis, not yet verified:
+        `w_slider::click(x, y)` only starts a drag if `x` lands within the
+        thumb graphic specifically (`x >= thumb_x && x < thumb_x +
+        thumb_width()`, typically a ~10-20px target) rather than anywhere
+        in the trough (matches native slider UX) -- unlike a button's
+        whole-rect hit test, this is far more sensitive to any small,
+        systematic click-coordinate offset, which could easily make the
+        thumb effectively unhittable while every larger click target
+        (buttons, list rows) keeps working fine and masks the problem.
+        Not fixed this pass -- didn't want to guess-fix a coordinate
+        offset without being able to verify it in a real browser first.
+        Added a guarded `fprintf(stderr, ...)` in `w_slider::click()`
+        logging `x`/`thumb_x`/`thumb_width()`/whether it counted as a hit,
+        so the next real-browser click on a slider will say definitively
+        whether this hypothesis holds, same pattern as this session's
+        other diagnostics.
   - [x] **Root cause found for the resolution/distortion cluster (bugs 1-3
         above), user asked to investigate this specifically over the fade
         theory**: `change_screen_mode()` forces the *menu* to a fixed
@@ -1634,21 +1660,41 @@ here is implicit, not explicit permission to redistribute.
         it) -- neither is a regression from this change, just further
         confirmation that Node fundamentally can't exercise real gameplay
         state. **Not yet confirmed in a real browser.**
-  - [ ] **Known, not-yet-fixed same-shaped bugs**: the other two
-        `try_and_display_chapter_screen()` call sites have the identical
-        "caller's code used to run only after this blocked" problem and
-        were *not* touched by this fix (both still pass no callback,
-        preserving their current, still-broken-under-Emscripten behavior):
-        the level-transition path (`interface.cpp`, calls `goto_level()`
-        and `start_game(..., true)` immediately after) and, worse, the
-        end-game epilogue screens, which call
+  - [x] **Level-transition chapter screen fixed (M5)** -- real-browser
+        report: pressing space to skip the chapter-2 ("Volunteers")
+        briefing screen locked up with a permanently blank screen. Exactly
+        the same bug class as `begin_game()`'s fix above, in the other
+        known-not-yet-fixed call site:
+        `transfer_to_new_level()` (`interface.cpp`) called
+        `try_and_display_chapter_screen(level_number, true, false)` with
+        no callback, then immediately ran `goto_level()`/
+        `start_game(..., true)` right after -- which raced ahead of the
+        (non-blocking, under Emscripten) chapter screen exactly like
+        `begin_game()` used to. `start_game()` sets
+        `game_state.state = _game_in_progress`, but the still-active
+        chapter screen keeps exclusive per-frame priority (see
+        `chapter_screen_active()` in `shell.cpp`'s main loop), so nothing
+        actually rendered -- and dismissing it afterward
+        (`finish_chapter_screen()`) restored `game_state.state` to
+        whatever it was *before* the transition even started, corrupting
+        it back to a non-gameplay state permanently. Fixed the same way:
+        extracted the post-chapter-screen code into a completion callback
+        (`continue_level_change`, capturing `entry` by value -- a small
+        POD struct, see `map.h` -- since this function's stack frame is
+        gone by the time a genuinely deferred callback fires), passed as
+        `try_and_display_chapter_screen()`'s 4th argument. Compiles
+        clean. **Not yet re-tested in a real browser.**
+  - [ ] **Still not fixed: the end-game epilogue screens**, which call
         `try_and_display_chapter_screen()` **in a loop** -- since
         `g_chapter_screen` is a single state slot, not a queue, a
         non-blocking loop would just overwrite each screen's registration
-        with the next before any of them actually display. Neither is
-        reachable from the "Begin New Game" flow the user has been testing
-        (level transitions and the ending are both further into actual
-        gameplay), so lower priority than what's fixed here, but real.
+        with the next before any of them actually display. This needs a
+        real chained-continuation fix (display screen *i*, and only queue
+        screen *i+1* from its `on_dismissed` callback), not just the
+        single-callback pattern used for the other two sites -- not
+        attempted yet, deferred until actually hit (this is the very end
+        of a scenario, further away than the level-transition bug just
+        fixed).
 
 **Alpha 1.0 tagged** at this point (`95ee202a`): menus, Preferences (all
 sub-dialogs, nesting), alerts, and Begin New Game all confirmed working
@@ -1943,8 +1989,52 @@ there was no way to verify it actually worked.
         concurrently, and avoids `GenerateSources()` (which pre-allocates
         its whole pool up front) eagerly creating hundreds of real Web
         Audio node graphs for a device that has no genuine capacity limit
-        to report in the first place. Compiles/links clean. **Not yet
-        re-tested in a real browser.**
+        to report in the first place.
+  - [ ] **Second real-browser retest: fallback + GenerateSources() fix
+        both engaged with no crash, but still genuinely no sound audible
+        (both Safari and Chrome)** -- no errors logged at all this time,
+        which rules out another init-time crash and points at something
+        further down the pipeline (AudioContext autoplay suspension, or a
+        real logic gap in the non-loopback path). Added (not yet able to
+        confirm which, if either, explains it):
+      - `OpenALManager::Init()` now logs its overall `true`/`false`
+        result explicitly (previously only `OpenDevice()`'s internal
+        failures were logged; a `false` from `LoadOptionalExtensions()`/
+        `GenerateSources()`/`GenerateEffects()` was silently swallowed by
+        `SoundManager::SetStatus()`'s `if (!OpenALManager::Init(...))
+        return;`).
+      - A new `web_log_audio_context_state()` (`EM_JS`, called right
+        after the non-loopback device+context are created in
+        `OpenDevice()`) logs the real `AudioContext.state` via
+        `Module.printErr()` (so it reaches the page's `#log` panel, not
+        just the browser devtools console this project's convention
+        avoids relying on -- see `game.html`'s own comment on Safari's
+        Web Inspector being unusable for this tab). Reaches into
+        Emscripten's OpenAL port's own internal `AL` namespace
+        (`emsdk/upstream/emscripten/src/lib/libopenal.js`) -- accessible
+        because all JS library and `EM_JS` code share one compiled-output
+        scope, guarded with `typeof`/try-catch in case that assumption
+        ever breaks.
+      - If the context is `suspended`, arms one more `{once:true}`
+        resume-on-gesture listener as a safety net alongside
+        libopenal.js's own built-in one (`autoResumeAudioContext`, wired
+        into `alcCreateContext`) -- covers the case where
+        `OpenALManager::Init()` recreates the device/context (its own
+        existing `Shutdown()`-and-recreate path, e.g. on a preferences
+        change) *after* the page's last real user gesture, which the
+        one-time built-in listener would have nothing left to fire on.
+      - Compiles/links clean. **Not yet re-tested in a real browser** --
+        the next report should say definitively whether the context is
+        stuck suspended (autoplay policy) or already running with no
+        audio for some other reason (in which case the next place to look
+        is whether `AudioPlayer`'s per-source `AssignSource()`/`Update()`/
+        `Play()` state machine -- untouched by any of this session's
+        changes, but never exercised against a non-loopback device before
+        now -- actually queues/plays buffers correctly against Emscripten's
+        OpenAL port).
+- [x] **M6 — Save games / prefs persistence** -- superseded by M4i (IDBFS
+      persistence) above, done as part of the save/load milestone rather
+      than as a separate later pass.
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)
 
 ## Status

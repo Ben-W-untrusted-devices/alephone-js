@@ -1843,6 +1843,16 @@ void w_slider::mouse_move(int x, int /*y*/)
 void w_slider::click(int x, int /*y*/)
 {
     if(enabled) {
+#ifdef __EMSCRIPTEN__
+	    // Web port diagnostic (see ../../WEB_PORT_PLAN.md, M5): sliders have
+	    // been reported unresponsive even after the canvas-resolution fix --
+	    // leading hypothesis is that this hit test (unlike a button's
+	    // whole-rect test) is narrow enough that a small click-coordinate
+	    // offset would miss it consistently. Safe to remove once confirmed
+	    // or ruled out.
+	    fprintf(stderr, "[w_slider::click] x=%d thumb_x=%d thumb_width=%d hit=%d\n",
+		    x, thumb_x, thumb_width(), (x >= thumb_x && x < thumb_x + thumb_width()));
+#endif
 	    if (x >= thumb_x && x < thumb_x + thumb_width()) {
 		    thumb_dragging = dirty = true;
 		    thumb_drag_x = x - thumb_x;
