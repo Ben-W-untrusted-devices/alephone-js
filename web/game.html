@@ -119,6 +119,35 @@
           printErr: (text) => log("[stderr]", text),
         });
 
+        // Persist preferences/saved games/quicksaves across reloads via
+        // IndexedDB. get_data_path() (Source_Files/CSeries/cspaths_sdl.cpp)
+        // resolves all of these under $HOME/.alephone, and $HOME defaults to
+        // /home/web_user (see engine's getEnvStrings()) -- mounting IDBFS
+        // there with autoPersist covers preferences, saved games,
+        // quicksaves, image cache, and recordings in one mount, with no
+        // per-save C++ changes needed (autoPersist tracks writes/deletes on
+        // its own). This must finish *before* callMain(): main() reads
+        // preferences synchronously very early in startup. See
+        // WEB_PORT_PLAN.md, M4i.
+        const persistentDataDir = "/home/web_user/.alephone";
+        try {
+          Module.FS.mkdir(persistentDataDir);
+          Module.FS.mount(Module.IDBFS, { autoPersist: true }, persistentDataDir);
+          Module.IDBFS.onAutoPersistStateChanged = (active) => {
+            if (active) log("[persistence] saving to IndexedDB...");
+          };
+          log("Syncing preferences/saved games from IndexedDB...");
+          await new Promise((resolve, reject) => {
+            Module.FS.syncfs(true, (err) => (err ? reject(err) : resolve()));
+          });
+          log("IndexedDB sync complete -- saves will persist across reloads.");
+        } catch (err) {
+          log(
+            "[persistence] IndexedDB unavailable, saves won't persist across reloads:",
+            err instanceof Error ? err.message : String(err)
+          );
+        }
+
         log(`Mounting ${currentFiles.length} file(s) into /data ...`);
         const result = await mountUploadedFiles(Module.FS, currentFiles, "/data");
         log(`Mounted ${result.mountedCount} file(s) (${result.skippedCount} skipped).`);

@@ -1717,12 +1717,62 @@ there was no way to verify it actually worked.
         browser** -- Node can't meaningfully exercise real DOM file
         inputs/downloads at all, so this genuinely needs real-browser
         confirmation, more than most fixes this session.
-  - [ ] **Not yet done: IDBFS persistence (M4b)** -- the actual "does a
-        save survive a page reload" question. Everything fixed so far
-        makes the *dialogs* work; where `SetToQuickSavesDir()` (and
-        preferences) resolve to is still plain MEMFS (in-memory,
-        wiped on reload) unless something mounts IDBFS there and syncs it
-        -- next up.
+  - [x] **IDBFS persistence (M4i)** -- the actual "does a save survive a
+        page reload" question. Traced where the relevant directories
+        actually live: `get_data_path()` (`Source_Files/CSeries/cspaths_sdl.cpp`,
+        the non-Apple/non-Windows branch, since Emscripten hits the
+        Linux-and-compatible `#else`) resolves `kPathLocalData`,
+        `kPathPreferences` (same dir on Linux/web), `kPathSavedGames`,
+        `kPathQuickSaves`, `kPathImageCache`, and `kPathRecordings` all
+        under a single `_get_local_data_path()` root
+        (`$HOME/.alephone`). The built engine's `getEnvStrings()`
+        (`web/engine/alephone.js`) defaults `HOME` to `/home/web_user`, so
+        everything lands at `/home/web_user/.alephone` -- one mount point
+        covers all of it.
+      - Chose IDBFS's `autoPersist: true` mount option (added to upstream
+        Emscripten a few versions back, present in this project's `emsdk`
+        checkout: `emsdk/upstream/emscripten/src/lib/libidbfs.js`) over
+        manual `FS.syncfs(false, cb)` calls after every write. It hooks
+        MEMFS's own `mknod`/`rmdir`/`unlink`/`symlink`/`rename` node_ops
+        for any node under the mount and queues a debounced
+        `IDBFS.syncfs(mount, false, cb)` automatically -- meaning
+        `create_quick_save()`, `dialog_delete()`, preference writes, etc.
+        all persist with **zero C++ changes**, since they all go through
+        ordinary POSIX file calls under this mount already. Confirmed via
+        `emsdk`'s own `test/fs/test_idbfs_sync.c` that this is
+        real/documented behavior, not a guess.
+      - `web/build-engine.sh`: added `-lidbfs.js` (IDBFS is a separate JS
+        library, not pulled in by `-sFORCE_FILESYSTEM=1` alone) and added
+        `IDBFS` to `-sEXPORTED_RUNTIME_METHODS` (alongside the existing
+        `FS,callMain`) so `game.html` can reach `Module.IDBFS`/`Module.FS`
+        from outside the compiled module, the same way it already reaches
+        `Module.FS` for uploaded scenario files.
+      - `web/game.html`: right after `createAlephOneModule()` resolves but
+        **before** `Module.callMain()`, mounts IDBFS at
+        `/home/web_user/.alephone` and awaits one `FS.syncfs(true, cb)` to
+        pull any previously-persisted data from IndexedDB into MEMFS. This
+        ordering is load-bearing: `main()` calls `initialize_preferences()`
+        /`load_environment_from_preferences()` synchronously very early
+        (`shell.cpp`), so the populate-sync has to be finished before
+        `callMain()` is invoked, not merely started. Wrapped in try/catch
+        (logs a warning to the existing `#log` panel and continues without
+        persistence) since `indexedDB` can be unavailable or throw in some
+        browser privacy modes -- consistent with "account for this being a
+        browser" applying to graceful degradation, not just the happy path.
+      - No C++ changes were needed for this milestone, unlike every other
+        item in this session -- the whole thing is JS-side (build flags +
+        `game.html`), since `autoPersist` does the write-tracking and the
+        populate-sync only needs to run once, before `main()`.
+      - Compiles/links clean (`Module['IDBFS'] = IDBFS;` and `autoPersist`
+        both confirmed present in the rebuilt `web/engine/alephone.js`).
+        **Not yet tested in a real browser** -- IDBFS fundamentally needs a
+        real `indexedDB`, which the Node test harness doesn't have (and
+        polyfilling it was judged disproportionate to the value here, since
+        this is a small, standard, well-documented Emscripten API rather
+        than the kind of engine-internal logic bug the Node harness was
+        built to hunt). Needs: start the engine, save a game (or change a
+        preference), reload the page, confirm the save/preference is still
+        there.
 - [ ] **M5 — Audio**
 - [ ] **M6 — Save games / prefs persistence**
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)

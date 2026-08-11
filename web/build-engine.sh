@@ -59,9 +59,15 @@ echo "Relinking for the browser into $OUT_DIR/alephone.js..."
   # data (Plugins/Scripts XML parsing especially) -- see WEB_PORT_PLAN.md,
   # M4d. 4MB is a generous, standard-order-of-magnitude bump (matches
   # typical native OS thread stack defaults), not a tuned minimum.
+  # -lidbfs.js + EXPORTED_RUNTIME_METHODS=...,IDBFS,...: lets game.html mount
+  # a persistent IndexedDB-backed directory (autoPersist: true, so writes
+  # persist automatically -- no manual syncfs() needed after every save) and
+  # sync it into MEMFS *before* callMain() runs, since preferences/saves are
+  # read synchronously very early in main(). See WEB_PORT_PLAN.md, M4i.
   eval "$LINK_CMD" \
     -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createAlephOneModule \
-    -sEXPORTED_RUNTIME_METHODS=FS,callMain \
+    -sEXPORTED_RUNTIME_METHODS=FS,IDBFS,callMain \
+    -lidbfs.js \
     -sFORCE_FILESYSTEM=1 -sINVOKE_RUN=0 -sENVIRONMENT=web \
     -sALLOW_MEMORY_GROWTH=1 -sASSERTIONS=1 -sSTACK_SIZE=4MB \
     -o "$OUT_DIR/alephone.js"
