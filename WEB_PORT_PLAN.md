@@ -1489,61 +1489,62 @@ here is implicit, not explicit permission to redistribute.
         an intermittent click-target-miss). Two dialogs still specifically
         broken, both re-tested via the "Crosshair Settings" dialog (which
         has sliders *and* is one of the two dialogs with this problem):
-      - [x] **Root cause found (M5): these were never a "stale background
-        pixels" rendering bug at all -- screenshots showed the actual
-        dialog title, sliders, and buttons duplicated and diagonally
-        offset (Aleph One's normal nested-dialog cascade offset), meaning
-        a single click on "SOFTWARE RENDERING OPTIONS" or "CROSSHAIR
-        SETTINGS" was opening the dialog *twice*, stacked as if the
-        second were a legitimately nested child of the first.** This
-        also explains "can't be closed": clicking Accept/Cancel on the
-        visible (front, second) instance closes only that one --
-        revealing the still-open first instance underneath, which looks
-        identical and unaffected, reading as "nothing happened."
-      - Root-caused (not just guessed): `w_button_base::mouse_up()`
-        (`sdl_widgets.cpp`) fires `proc(arg)` whenever the release lands
-        within the button's rect, with **no check that a matching
-        `mouse_down()` actually preceded it** -- so a second, spurious
-        `SDL_MOUSEBUTTONUP` for the same button (with no intervening
-        `mouse_down`) fires the button's action again. Traced
-        `dialog::event()`'s widget dispatch, the cooperative dialog
-        stack's nesting handling (`run_dialog_cooperatively()`/
-        `update_cooperative_dialog()`), and `process_events()`'s
-        per-frame event-draining loop end to end looking for how a
-        single physical click could reach `mouse_up()` twice -- ruled all
-        of them out as the mechanism (each processes one `SDL_Event`
-        exactly once; nothing double-dispatches), but couldn't find a way
-        to trace SDL's own Emscripten-backend mouse-event generation
-        itself (no source access to instrument, not reproducible in the
-        Node harness), so the precise origin of the duplicate
-        `SDL_MOUSEBUTTONUP` remains unconfirmed. Fixed the reachable,
-        provably-correct half of this regardless: `mouse_up()` now
-        debounces via a per-button `last_activation_tick`, ignoring a
-        second activation landing within `MACHINE_TICKS_PER_SECOND / 5`
-        (~200ms) of the first -- never a legitimate distinct user click
-        for a settings-dialog button, so safe on native too (not
-        Emscripten-gated).
-      - This also explains the logged `RuntimeError: Out of bounds
-        memory access`: `crosshair_dialog()`'s widget bindings live in a
-        single file-scope global, `crosshair_binders`
-        (`std::unique_ptr<BinderSet>`) -- fine for one instance at a
-        time (matches native's blocking `d.run()` assumption that only
-        one is ever alive), but with two concurrent cooperative instances
-        (the bug above), closing the front one runs its completion
-        callback's `crosshair_binders.reset(0)`, which destroys the
-        *shared* `BinderSet` out from under the still-open back
-        instance's widgets. Its `update_crosshair_display` processing
-        function (still ticking every frame via `pump_once()`) then
-        dereferences the now-null `crosshair_binders` on its next
-        `pump_once()` -- a null-pointer deref, which is exactly what a
-        WASM "out of bounds memory access" trap looks like. Not changed
-        directly (still a latent fragility in `crosshair_dialog()`'s
-        global-singleton assumption), but the debounce fix above removes
-        the only currently-known way to create the second concurrent
-        instance that triggers it.
-      - Compiles clean, applies to all buttons (not just these two
-        dialogs) since the bug is in shared `w_button_base` code. **Not
-        yet re-tested in a real browser.**
+      - [x] **First fix attempt (button-double-fire debounce) was wrong --
+        user corrected it after retesting, and re-reading the code with
+        their correction in hand found the real bug (M5).** My initial
+        theory (screenshots showing two full stacked instances of the
+        same dialog) didn't survive a closer look: `dialog::layout()`
+        (`sdl_dialogs.cpp`) centers every dialog independently on the
+        same logical screen dimensions with no cascade/offset logic at
+        all -- two genuinely separate instances of the *same* dialog type
+        would compute the *identical* `rect` and perfectly overlap, not
+        appear diagonally offset the way the screenshots showed. The user
+        correctly identified it as "drawing the frontmost dialog in the
+        top-left corner of the rectangle of the preceding dialog... looks
+        like draw buffer confusion" -- which pointed straight at the real
+        cause once checked: **`dialog_surface`** (`sdl_dialogs.cpp:73`,
+        `static SDL_Surface *dialog_surface`, a single 640x480 buffer)
+        **is shared by every `dialog` instance in the program, not
+        per-instance** -- a safe pre-fork design under native, where
+        `d.run()` blocks, so exactly one dialog is ever mid-draw at a
+        time. `dialog::pump_once()`'s redraw-throttle block calls
+        `draw_dirty_widgets()` then `update()` (the latter blits
+        `dialog_surface` to the real screen at `this->rect`). If
+        `process_events()` (called at the top of the same `pump_once()`)
+        opens a nested dialog synchronously -- exactly how sub-dialog
+        buttons work, see `run_dialog_cooperatively()`'s own comment on
+        why dialogs nest via widget callbacks mid-pump -- that nested
+        dialog's `start()` has *already* cleared and redrawn its own
+        content into the shared `dialog_surface` by the time control
+        returns to the *parent's* `pump_once()`. The parent's own
+        redraw-throttle block then runs anyway, blitting whatever is now
+        in `dialog_surface` (the *child's* content) to the screen at the
+        *parent's* rect -- exactly "the frontmost dialog rendered at the
+        preceding dialog's corner." `draw_dirty_widgets()` already
+        defends against this exact scenario (a pre-existing,
+        already-in-the-codebase `if (top_dialog != this) return;`, which
+        only makes sense if a case like this was anticipated), but the
+        `update()` call right after it had no equivalent guard -- and
+        `update()` is the one that actually touches the screen. Fixed by
+        gating the whole block on the same, already-established
+        `top_dialog == this` check. Unreachable on native (a nested
+        dialog's blocking `run()` doesn't return control to this line
+        until it has already finished and restored `top_dialog`), so this
+        is a no-op there -- purely a cooperative-path fix.
+      - This also gives a cleaner explanation for "Crosshair Settings
+        can't be closed" than my retracted two-instances theory: with the
+        wrong content blitted to the wrong screen position, clicking
+        where Accept/Cancel *visually* appeared didn't land on the real
+        (correctly, if invisibly, positioned) widgets underneath -- not a
+        genuinely broken close button, just misaligned hit-testing caused
+        by the same rendering bug.
+      - The button-debounce change from the retracted theory
+        (`w_button_base::mouse_up()`, `sdl_widgets.cpp`) is left in place
+        -- real fix or not for *this* bug, a button's action firing twice
+        from what should be one interaction is still a legitimate
+        defensive improvement, harmless on native, and doesn't need to be
+        reverted.
+      - Compiles clean. **Not yet re-tested in a real browser.**
       - [ ] **Slider still unresponsive after the resolution fix (M5)** --
         re-reported in a real browser well after "resolution is correct"
         was separately confirmed, so it's *not* simply downstream of that
@@ -2176,6 +2177,49 @@ there was no way to verify it actually worked.
         libsndfile/libvorbis being linked and the file being confirmed
         present at `/data/Music.ogg` -- `Play()` returning false because
         zero buffers ever got filled/queued.
+  - [x] **Fifth real-browser retest: root cause found -- `assigned=0` on
+        literally every single attempt, from the very first UI sound of
+        the session onward (M5).** `AssignSource()` failing 100% of the
+        time, immediately, before any level even loaded, ruled out
+        anything data/decoding-related (the previous entry's leading
+        hypothesis) and pointed at source *initialization* itself. Traced
+        it to `AudioPlayer::SetUpALSourceInit()` (`AudioPlayer.cpp`) and
+        `SoundPlayer::SetUpALSourceInit()`/`SetUpALSource3D()`
+        (`SoundPlayer.cpp`, an override + the per-Update() "behavior"
+        function): each calls `alGetError()` exactly *once*, at the very
+        end, after several `alSourcei()` calls -- so a single unsupported
+        parameter anywhere in that sequence silently poisons the whole
+        result. Confirmed by reading Emscripten's OpenAL port directly
+        (`emsdk/upstream/emscripten/src/lib/libopenal.js`): its
+        `alSourcei()` only recognizes a fixed whitelist of parameters (14
+        of them); anything outside it -- including `AL_MIN_GAIN`,
+        `AL_PITCH`, `AL_GAIN`, `AL_MAX_GAIN` (all four *are* recognized by
+        the separate `alSourcef()`/float-variant whitelist, just not the
+        int one) and `AL_DIRECT_FILTER` (needs `AL_EXT_EFX`, confirmed
+        unimplemented back in the original M5 fallback work) -- falls
+        through to a `default:` case that calls
+        `AL.setSourceParam(..., null)`, setting a real AL error instead
+        of silently ignoring the unknown parameter. `SetUpALSourceInit()`
+        called `AL_MIN_GAIN`/`AL_PITCH`/`AL_DIRECT_FILTER` via the int
+        variant unconditionally; `SoundPlayer`'s override additionally
+        called `AL_GAIN`/`AL_MAX_GAIN` that way; and
+        `SetUpALSource3D()` (called from every `Update()` on every
+        3D/behavior-driven sound, not just at init) called
+        `AL_DIRECT_FILTER` every time for the obstruction-muffling
+        effect. Every one of these values is either the OpenAL spec's own
+        default for a fresh source (0, 1, `AL_FILTER_NULL`) or gets its
+        real value moments later via a working `alSourcef()` call
+        anyway, so skipping all of them under Emscripten (guarded
+        `#ifndef __EMSCRIPTEN__`; native untouched) changes nothing
+        observable except that source setup finally reports success.
+        Obstruction muffling degrades to "always audible" under
+        Emscripten (same class of gap as the EFX low-pass filter fix
+        earlier in M5) -- acceptable, documented, not a blocker.
+        Compiles clean. **Not yet re-tested in a real browser** -- this
+        is the first fix in this whole investigation with a fully
+        confirmed, reproduced-from-a-real-log root cause rather than a
+        plausible-sounding guess, so reasonably high confidence this
+        actually fixes sound and music both.
 - [x] **M6 — Save games / prefs persistence** -- superseded by M4i (IDBFS
       persistence) above, done as part of the save/load milestone rather
       than as a separate later pass.

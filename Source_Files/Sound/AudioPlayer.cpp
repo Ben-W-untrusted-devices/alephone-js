@@ -155,8 +155,26 @@ SetupALResult AudioPlayer::SetUpALSourceIdle() {
 }
 
 bool AudioPlayer::SetUpALSourceInit() {
+	// Web port (see ../../WEB_PORT_PLAN.md, M5): Emscripten's OpenAL port
+	// (emsdk/upstream/emscripten/src/lib/libopenal.js) only recognizes a
+	// fixed whitelist of alSourcei() parameters -- anything else (including
+	// all three below: AL_MIN_GAIN/AL_PITCH aren't in its dispatch switch at
+	// all, and AL_DIRECT_FILTER needs AL_EXT_EFX, which isn't implemented
+	// there either, see OpenALManager.cpp's Init()) falls through to a
+	// default case that sets an AL error with a null value instead of
+	// silently ignoring it. SetUpALSourceInit() only checks alGetError()
+	// once, at the very end, so any single one of these three calls was
+	// silently poisoning the result for *every* source -- every sound and
+	// every music track failed to initialize, 100% of the time (confirmed
+	// via a real-browser diagnostic: AssignSource() failing on every single
+	// attempt from the very first sound of the session onward). Safe to
+	// skip entirely under Emscripten: all three values (0, 1, AL_FILTER_NULL)
+	// are just the OpenAL spec's own defaults for a freshly-generated
+	// source, so not setting them changes nothing.
+#ifndef __EMSCRIPTEN__
 	alSourcei(audio_source->source_id, AL_MIN_GAIN, 0);
 	alSourcei(audio_source->source_id, AL_PITCH, 1);
+#endif
 	alSourcei(audio_source->source_id, AL_SOURCE_RELATIVE, AL_TRUE);
 	alSource3i(audio_source->source_id, AL_POSITION, 0, 0, 0);
 	alSourcei(audio_source->source_id, AL_ROLLOFF_FACTOR, 0);
@@ -164,7 +182,9 @@ bool AudioPlayer::SetUpALSourceInit() {
 	alSourcei(audio_source->source_id, AL_DISTANCE_MODEL, AL_NONE);
 	alSourcei(audio_source->source_id, AL_REFERENCE_DISTANCE, 0);
 	alSourcei(audio_source->source_id, AL_MAX_DISTANCE, 0);
+#ifndef __EMSCRIPTEN__
 	alSourcei(audio_source->source_id, AL_DIRECT_FILTER, AL_FILTER_NULL);
+#endif
 
 #ifdef AL_SOFT_source_spatialize
 	if (OpenALManager::Get()->IsExtensionSupported(OpenALManager::OptionalExtension::Spatialization))

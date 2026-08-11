@@ -221,10 +221,21 @@ SetupALResult SoundPlayer::SetUpALSourceIdle() {
 //This is called once, when we assign the source to the player
 bool SoundPlayer::SetUpALSourceInit() {
 
+	// Web port (see ../../WEB_PORT_PLAN.md, M5; AudioPlayer::SetUpALSourceInit()
+	// has the fuller explanation): none of these four are in Emscripten's
+	// OpenAL port's alSourcei() whitelist (AL_GAIN/AL_MAX_GAIN/AL_MIN_GAIN
+	// are only recognized via the float variant there, and AL_DIRECT_FILTER
+	// needs AL_EXT_EFX, unimplemented) -- calling them silently poisons
+	// alGetError() for the rest of this function under Emscripten. Skipping
+	// them is safe: AL_GAIN/AL_MAX_GAIN get their real values moments later
+	// via the working alSourcef() calls in SetUpALSourceIdle(), and 0 /
+	// AL_FILTER_NULL are the OpenAL spec defaults for a fresh source anyway.
+#ifndef __EMSCRIPTEN__
 	alSourcei(audio_source->source_id, AL_GAIN, 0);
 	alSourcei(audio_source->source_id, AL_MAX_GAIN, 0);
 	alSourcei(audio_source->source_id, AL_MIN_GAIN, 0);
 	alSourcei(audio_source->source_id, AL_DIRECT_FILTER, AL_FILTER_NULL);
+#endif
 
 	if (parameters.Get().is_2d) {
 		alSourcei(audio_source->source_id, AL_DISTANCE_MODEL, AL_NONE);
@@ -360,7 +371,15 @@ SetupALResult SoundPlayer::SetUpALSource3D() {
 	alSourcef(audio_source->source_id, AL_ROLLOFF_FACTOR, finalBehaviorParameters.rolloff_factor);
 	alSourcef(audio_source->source_id, AL_MAX_GAIN, finalBehaviorParameters.max_gain * volume);
 	alSourcef(audio_source->source_id, AL_GAIN, finalBehaviorParameters.max_gain * volume);
+	// Web port (see ../../WEB_PORT_PLAN.md, M5): AL_DIRECT_FILTER needs
+	// AL_EXT_EFX, unimplemented in Emscripten's OpenAL port -- calling it
+	// poisons alGetError() below on *every* Update() for every 3D/behavior-
+	// driven sound, not just at init (see SetUpALSourceInit()'s fuller
+	// comment). Obstruction muffling degrades to "always audible" under
+	// Emscripten; skipping this call is otherwise harmless.
+#ifndef __EMSCRIPTEN__
 	alSourcei(audio_source->source_id, AL_DIRECT_FILTER, OpenALManager::Get()->GetLowPassFilter(finalBehaviorParameters.high_frequency_gain));
+#endif
 	return SetupALResult(alGetError() == AL_NO_ERROR, finalBehaviorParameters == behaviorParameters);
 }
 

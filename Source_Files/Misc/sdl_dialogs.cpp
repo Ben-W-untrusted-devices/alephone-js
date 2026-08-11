@@ -2243,7 +2243,27 @@ bool dialog::pump_once(void)
 	if (done)
 		return true;
 
-	if (machine_tick_count() > last_redraw + TICKS_PER_SECOND / 30)
+	// Web port (see ../../WEB_PORT_PLAN.md, M5): if process_events() just
+	// above opened a nested dialog (a widget's proc() calling
+	// run_dialog_cooperatively() synchronously, mid-event -- see that
+	// function's own comment on why dialogs nest this way), top_dialog now
+	// points at the nested dialog, not `this`. draw_dirty_widgets() already
+	// guards against exactly this (its own pre-existing
+	// `if (top_dialog != this) return;`), but update() right below it did
+	// not -- and update() is the call that actually blits dialog_surface to
+	// the screen. dialog_surface is a single shared 640x480 buffer (see its
+	// `static SDL_Surface *dialog_surface` declaration), not per-dialog-
+	// instance, and by this point it holds the *nested* dialog's own
+	// freshly-drawn content (its start() already ran, synchronously, inside
+	// process_events() above). Without this guard, update() would blit that
+	// content using *this* dialog's (the parent's) rect instead of the
+	// nested dialog's own -- reported in a real browser as "the frontmost
+	// dialog renders in the top-left corner of the preceding dialog's
+	// rectangle". On native this condition is unreachable here: a nested
+	// dialog's blocking run() doesn't return control to this line until it
+	// has already finished and restored top_dialog, so this check is a
+	// no-op there, purely defensive for the cooperative path.
+	if (top_dialog == this && machine_tick_count() > last_redraw + TICKS_PER_SECOND / 30)
 	{
 		draw_dirty_widgets();
 		SDL_Rect r{0, 0, rect.w, rect.h};
