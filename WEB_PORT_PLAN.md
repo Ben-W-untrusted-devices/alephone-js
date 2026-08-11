@@ -1843,6 +1843,93 @@ there was no way to verify it actually worked.
         dangling `m_saves`) work correctly too, since they were likely
         silently broken the same way.
 - [ ] **M5 — Audio**
+  - [x] **Non-loopback fallback so OpenAL actually initializes (M5)** --
+        a real in-browser log line pinned the exact blocker:
+        `ALC_SOFT_loopback extension is not supported
+        (OpenALManager.cpp:58)`. `OpenALManager::Init()`
+        (`Source_Files/Sound/OpenALManager.cpp`) hard `return false`d the
+        entire audio subsystem whenever that extension is absent.  This
+        engine's audio architecture is deliberately built around OpenAL's
+        *loopback* device mode: `OpenDevice()` opens a loopback device,
+        and an SDL audio callback (`MixerCallback` → `GetPlayBackAudio()`)
+        *pulls* mixed PCM out of it on demand via `alcRenderSamplesSOFT`,
+        so AlephOne's own SDL audio thread -- not OpenAL -- owns real-time
+        timing. Good design natively, but Emscripten's built-in OpenAL
+        port (`emsdk/upstream/emscripten/src/lib/libopenal.js` -- a real,
+        actively-maintained Web-Audio-backed implementation, not a stub)
+        doesn't implement `ALC_SOFT_loopback` at all, so this path could
+        never succeed there.
+      - Real threaded openal-soft (which *does* support loopback) is a
+        confirmed dead end for now, not just an unexplored option: M3b
+        already root-caused, empirically, that this emsdk build (6.0.6)
+        can't produce a working `-pthread` link at all --
+        `libhtml5.a`/`libal.a` aren't built with an atomics/bulk-memory
+        variant in this SDK version, and SDL2's Emscripten backend
+        genuinely needs `libhtml5`. A toolchain limitation, not a flags
+        problem -- not revisited.
+      - Read `libopenal.js` directly to confirm the alternative holds up:
+        `alcOpenDevice`/`alcCreateContext` work against a real
+        `AudioContext` (with its own `autoResumeAudioContext` handling for
+        the browser autoplay-gesture requirement -- nothing needed from
+        us), and it implements `alGenSources`/`alBufferData`/
+        `alSourcePlay`/HRTF (`ALC_HRTF_SOFT`/`ALC_HRTF_STATUS_SOFT`, via a
+        Web Audio `PannerNode` `'HRTF'` panning model) -- everything
+        `AudioPlayer.cpp`'s per-source logic
+        (`AssignSource()`/`Update()`/`Play()`) actually calls, all plain
+        `alSourceQueueBuffers`/`alSourcePlay` with no loopback dependency.
+        **Not implemented at all**: `AL_EXT_EFX` (filters) -- only a
+        `// TODO: 'ALC_EXT_EFX'` comment, no functions.
+      - Added a fallback path in `OpenALManager` (new `static bool
+        p_UsingLoopback` flag, set once in `Init()` -- static because
+        `Init()` itself is static and runs before the singleton
+        `instance` exists): when `ALC_SOFT_loopback` is absent, open a
+        normal device (`alcOpenDevice(nullptr)` +
+        `alcCreateContext(..., {ALC_HRTF_SOFT, ...})`, dropping the
+        loopback-only `ALC_FORMAT_*`/`ALC_FREQUENCY` attributes a real
+        device doesn't need) instead of failing outright, and skip the
+        SDL-audio-callback pull machinery entirely (no `SDL_OpenAudio()`
+        call in the constructor, `Start()`/`Stop()`/`Pause()` manage
+        `process_audio_active`/`paused_audio` directly instead of via
+        `SDL_PauseAudio()`/`SDL_GetAudioStatus()`). Added a new public
+        `OpenALManager::Tick()`, called once per frame from
+        `shell.cpp`'s `main_event_loop_iteration()` (before the
+        cooperative-dialog/chapter-screen early returns, so music keeps
+        playing under a modal dialog same as native) -- this is the
+        non-loopback counterpart to `MixerCallback`, driving
+        `ProcessAudioQueue()` directly with no final
+        `alcRenderSamplesSOFT` pull step, since OpenAL renders/outputs
+        audio itself once sources are queued and playing. `AudioPlayer.cpp`/
+        `SoundPlayer.cpp`/`MusicPlayer.cpp`/`StreamPlayer.cpp` needed no
+        changes at all -- they already go through this same
+        `OpenALManager`-owned source/buffer pool via plain OpenAL calls,
+        so sound effects and music are both covered by this one fix
+        (`PlayMusic()` pushes into the identical
+        `audio_players_shared`/`audio_players_queue` pipeline as
+        `PlaySound()`).
+      - Guarded every EFX call site (`GenerateEffects()`,
+        `GetLowPassFilter()`, `CleanEverything()`'s `alDeleteFilters`)
+        against the filter function pointers being null (never loaded
+        when `AL_EXT_EFX` isn't present) -- degrades to "no obstruction
+        muffling" rather than crashing on a null function pointer call.
+        `SoundPlayer.cpp:363` already unconditionally does
+        `alSourcei(source, AL_DIRECT_FILTER, GetLowPassFilter(...))`, so
+        returning `AL_FILTER_NULL` there needed no caller-side change --
+        other call sites (`AudioPlayer.cpp:167`, `SoundPlayer.cpp:227`)
+        already use that exact value for "no filter".
+      - No `configure.ac`/vcpkg/`build-engine.sh` changes needed -- this
+        was a pure C++ logic gap, not a linking problem (the code already
+        compiled and ran today; that's how the diagnostic log line got
+        produced in the first place).
+      - Compiles/links clean. **Not yet tested in a real browser** --
+        this can't be exercised via the Node harness (no real Web
+        Audio/AudioContext there). Needs: start the engine, confirm the
+        `ALC_SOFT_loopback extension is not supported` log line is
+        followed by a *successful* fallback instead of silence, play a
+        level and confirm both sound effects and music are audible, and
+        listen for stutter/glitching given the streaming refill cadence
+        changed from an SDL-buffer-driven pull to a per-frame-tick push
+        (~16ms, tighter than a typical native buffer callback, but worth
+        confirming empirically).
 - [ ] **M6 — Save games / prefs persistence**
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)
 

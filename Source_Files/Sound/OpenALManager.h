@@ -67,6 +67,11 @@ public:
 	void Pause(bool paused);
 	void Start();
 	void Stop();
+	// Web port (see ../../WEB_PORT_PLAN.md, M5): when not using a loopback
+	// device (see p_UsingLoopback below), there's no SDL audio callback
+	// pulling mixed PCM to drive ProcessAudioQueue() -- the caller (shell.cpp's
+	// per-frame tick) drives it directly via this instead.
+	void Tick();
 	std::shared_ptr<SoundPlayer> PlaySound(const Sound& sound, const SoundParameters& parameters);
 	std::shared_ptr<MusicPlayer> PlayMusic(std::vector<MusicPlayer::Sequence>& sequences, uint32_t starting_sequence_index, uint32_t starting_segment_index, const MusicParameters& parameters);
 	std::shared_ptr<StreamPlayer> PlayStream(CallBackStreamPlayer callback, uint32_t rate, bool stereo, AudioFormat audioFormat, void* userdata);
@@ -92,6 +97,18 @@ private:
 	static OpenALManager* instance;
 	ALCdevice* p_ALCDevice = nullptr;
 	ALCcontext* p_ALCContext = nullptr;
+	// Web port (see ../../WEB_PORT_PLAN.md, M5): true on every platform this
+	// engine previously shipped on -- a real OpenAL implementation with the
+	// ALC_SOFT_loopback extension, which lets AlephOne's own SDL audio
+	// callback pull mixed PCM on demand (see MixerCallback/GetPlayBackAudio).
+	// Emscripten's built-in OpenAL port doesn't implement that extension, so
+	// Init() falls back to a normal (non-loopback) device instead when it's
+	// absent -- OpenAL then owns real-time output itself, driven by Tick()
+	// instead of the SDL audio callback. See Init()/OpenDevice() for where
+	// this is set, and Tick()/Start()/Stop()/Pause() for where it's read.
+	// static: like the LOAD_PROC'd function pointers below, this is decided
+	// by Init(), which is itself static and runs before `instance` exists.
+	static bool p_UsingLoopback;
 	OpenALManager(const AudioParameters& parameters);
 	~OpenALManager();
 	std::atomic<float> master_volume;

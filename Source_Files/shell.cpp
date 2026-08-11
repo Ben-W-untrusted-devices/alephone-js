@@ -32,6 +32,7 @@
 #include "shell.h"
 #include "interface.h"
 #include "SoundManager.h"
+#include "OpenALManager.h"
 #include "fades.h"
 #include "screen.h"
 #include "Music.h"
@@ -730,6 +731,15 @@ const uint32 TICKS_BETWEEN_EVENT_POLL = 16; // 60 Hz
 static void main_event_loop_iteration(short game_state)
 {
 #ifdef __EMSCRIPTEN__
+	// Web port (see ../../WEB_PORT_PLAN.md, M5): drives OpenALManager's
+	// non-loopback audio queueing (see OpenALManager::Tick()) once per
+	// frame -- unconditionally, before the dialog/chapter-screen early
+	// returns below, so music keeps playing while a modal dialog is up
+	// (matches native, where it's driven by an independent SDL audio
+	// callback instead). A no-op on native (Tick() itself checks
+	// p_UsingLoopback) and before OpenALManager::Init() has run.
+	if (OpenALManager::Get()) OpenALManager::Get()->Tick();
+
 	// Web port (see ../../WEB_PORT_PLAN.md, M4c-ii): while a dialog is being
 	// driven cooperatively (see sdl_dialogs.h/.cpp), it needs exclusive
 	// access to input for the same reason a real dialog::run() call would

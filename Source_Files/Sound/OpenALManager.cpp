@@ -19,6 +19,7 @@
 #include "OpenALManager.h"
 #include "Logging.h"
 
+bool OpenALManager::p_UsingLoopback = true;
 LPALCLOOPBACKOPENDEVICESOFT OpenALManager::alcLoopbackOpenDeviceSOFT;
 LPALCISRENDERFORMATSUPPORTEDSOFT OpenALManager::alcIsRenderFormatSupportedSOFT;
 LPALCRENDERSAMPLESSOFT OpenALManager::alcRenderSamplesSOFT;
@@ -55,8 +56,14 @@ bool OpenALManager::Init(const AudioParameters& parameters) {
 			LOAD_PROC(LPALFILTERF, alFilterf);
 #undef LOAD_PROC
 		} else {
-			logError("ALC_SOFT_loopback extension is not supported"); //Should never be the case as long as >= OpenAL 1.14
-			return false;
+			// Web port (see ../../WEB_PORT_PLAN.md, M5): expected on
+			// Emscripten -- its built-in OpenAL port doesn't implement
+			// ALC_SOFT_loopback (or AL_EXT_EFX, whose filter functions
+			// would otherwise have been loaded in the block above; they
+			// stay null, see GenerateEffects()/GetLowPassFilter()). Fall
+			// back to a normal device instead of failing outright.
+			logError("ALC_SOFT_loopback extension is not supported, falling back to a normal (non-loopback) device"); //Should never be the case natively, as long as >= OpenAL 1.14
+			p_UsingLoopback = false;
 		}
 	}
 
@@ -155,6 +162,16 @@ void OpenALManager::ResyncPlayers(bool music_players_only) {
 }
 
 void OpenALManager::Start() {
+	// Web port (see ../../WEB_PORT_PLAN.md, M5): no SDL audio device exists
+	// in non-loopback mode (see the constructor) -- process_audio_active is
+	// managed directly instead of read back from SDL_GetAudioStatus(), and
+	// Tick() (not a MixerCallback SDL silences/resumes) is what actually
+	// gates ProcessAudioQueue() on it.
+	if (!p_UsingLoopback) {
+		process_audio_active = !is_using_recording_device;
+		return;
+	}
+
 	SDL_PauseAudio(is_using_recording_device); //Start playing only if not recording playback
 	process_audio_active = SDL_GetAudioStatus() != SDL_AUDIO_STOPPED;
 }
@@ -163,19 +180,30 @@ void OpenALManager::Pause(bool paused) {
 	if (!process_audio_active || paused_audio == paused) return;
 
 	paused_audio = paused;
-	SDL_PauseAudio(paused_audio);
+	if (p_UsingLoopback) SDL_PauseAudio(paused_audio);
 	elapsed_pause_time = machine_tick_count() - elapsed_pause_time;
 }
 
 void OpenALManager::Stop() {
-	SDL_PauseAudio(true);
+	if (p_UsingLoopback) SDL_PauseAudio(true);
 	StopAllPlayers();
 	process_audio_active = false;
 }
 
 void OpenALManager::ToggleDeviceMode(bool recording_device) {
 	is_using_recording_device = recording_device;
-	SDL_PauseAudio(is_using_recording_device);
+	if (p_UsingLoopback) SDL_PauseAudio(is_using_recording_device);
+}
+
+void OpenALManager::Tick() {
+	// Web port (see ../../WEB_PORT_PLAN.md, M5): the non-loopback
+	// counterpart to MixerCallback()/GetPlayBackAudio() -- there's no SDL
+	// audio callback to drive ProcessAudioQueue() in this mode, so shell.cpp's
+	// per-frame tick calls this directly instead. No alcRenderSamplesSOFT
+	// call needed afterward: OpenAL renders/outputs audio itself once
+	// sources are queued and playing, it isn't pulled into a buffer we own.
+	if (p_UsingLoopback || !process_audio_active || paused_audio) return;
+	ProcessAudioQueue();
 }
 
 std::shared_ptr<SoundPlayer> OpenALManager::PlaySound(const Sound& sound, const SoundParameters& parameters) {
@@ -272,6 +300,39 @@ bool OpenALManager::IsHrtfEnabled() const {
 bool OpenALManager::OpenDevice() {
 	if (p_ALCDevice) return true;
 
+	// Web port (see ../../WEB_PORT_PLAN.md, M5): no loopback extension under
+	// Emscripten (see Init()) -- open a normal device instead. OpenAL then
+	// owns real-time output itself (via Emscripten's Web-Audio-backed OpenAL
+	// port), driven by Tick() rather than pulled through MixerCallback/
+	// alcRenderSamplesSOFT. A real device picks its own native format/rate,
+	// so none of the ALC_FORMAT_*/ALC_FREQUENCY loopback-only attributes
+	// below apply -- only ALC_HRTF_SOFT still makes sense to request.
+	if (!p_UsingLoopback) {
+		p_ALCDevice = alcOpenDevice(nullptr);
+		if (!p_ALCDevice) {
+			logError("Could not open audio device");
+			return false;
+		}
+
+		ALCint attrs[] = {
+			ALC_HRTF_SOFT, audio_parameters.hrtf,
+			0,
+		};
+
+		p_ALCContext = alcCreateContext(p_ALCDevice, attrs);
+		if (!p_ALCContext) {
+			logError("Could not create audio context");
+			return false;
+		}
+
+		if (!alcMakeContextCurrent(p_ALCContext)) {
+			logError("Could not make audio context current");
+			return false;
+		}
+
+		return true;
+	}
+
 	p_ALCDevice = alcLoopbackOpenDeviceSOFT(nullptr);
 	if (!p_ALCDevice) {
 		logError("Could not open audio loopback device");
@@ -332,6 +393,16 @@ bool OpenALManager::CloseDevice() {
 }
 
 bool OpenALManager::GenerateEffects() {
+	// Web port (see ../../WEB_PORT_PLAN.md, M5): AL_EXT_EFX isn't implemented
+	// under Emscripten (see Init()) -- alGenFilters etc. stay null in that
+	// case. Skip filter creation entirely; GetLowPassFilter() below already
+	// tolerates this (returns AL_FILTER_NULL), degrading to "no obstruction
+	// muffling" rather than crashing on a null function pointer.
+	if (!alGenFilters) {
+		low_pass_filter = AL_FILTER_NULL;
+		return true;
+	}
+
 	alGenFilters(1, &low_pass_filter);
 	alFilteri(low_pass_filter, AL_FILTER_TYPE, AL_FILTER_LOWPASS);
 	alFilterf(low_pass_filter, AL_LOWPASS_GAIN, 1.f);
@@ -340,6 +411,7 @@ bool OpenALManager::GenerateEffects() {
 }
 
 ALuint OpenALManager::GetLowPassFilter(float highFrequencyGain) const {
+	if (!alFilterf) return AL_FILTER_NULL;
 	alFilterf(low_pass_filter, AL_LOWPASS_GAINHF, highFrequencyGain);
 	return low_pass_filter;
 }
@@ -387,6 +459,14 @@ OpenALManager::OpenALManager(const AudioParameters& parameters) {
 	UpdateParameters(parameters);
 	alListener3i(AL_POSITION, 0, 0, 0);
 
+	// Web port (see ../../WEB_PORT_PLAN.md, M5): without a loopback device
+	// there's no PCM buffer for SDL to pull from, and GetBestOpenALSupportedFormat()
+	// would otherwise fall back to calling alcLoopbackOpenDeviceSOFT directly
+	// (see its own definition below) -- a null function pointer in this mode.
+	// OpenAL drives real output itself once OpenDevice() runs; audio_parameters
+	// (already set by UpdateParameters() above) is all that's needed.
+	if (!p_UsingLoopback) return;
+
 	auto openalFormat = GetBestOpenALSupportedFormat();
 	assert(openalFormat && "Audio format not found or not supported");
 	SDL_AudioSpec desired = {};
@@ -426,7 +506,9 @@ void OpenALManager::CleanEverything() {
 		sources_pool.pop();
 	}
 
-	alDeleteFilters(1, &low_pass_filter);
+	// Web port (see ../../WEB_PORT_PLAN.md, M5): alDeleteFilters is only
+	// loaded when AL_EXT_EFX is available (see Init()) -- null otherwise.
+	if (alDeleteFilters) alDeleteFilters(1, &low_pass_filter);
 	bool closedDevice = CloseDevice();
 	assert(closedDevice && "Could not close audio device");
 }
