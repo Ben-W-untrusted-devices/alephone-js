@@ -1478,6 +1478,48 @@ here is implicit, not explicit permission to redistribute.
         the parent menu image at the top-left corner as their background —
         likely the same resolution/canvas mismatch leaving stale pixel
         content visible.
+      - [x] **Slider hit-testing confirmed fixed itself; two other bugs
+        found in the same batch of retesting (M5)** -- real-browser
+        retest: "Other sliders seem to work now" (no code change was
+        needed between the previous report and this one -- the guarded
+        diagnostic added below was never actually triggered by a
+        real-browser log yet, so the coordinate-offset hypothesis is
+        neither confirmed nor ruled out; it's possible this was masked by
+        whatever was going on with the specific dialogs below, or simply
+        an intermittent click-target-miss). Two dialogs still specifically
+        broken, both re-tested via the "Crosshair Settings" dialog (which
+        has sliders *and* is one of the two dialogs with this problem):
+      - "Crosshair Settings" **still can't be closed** (previously
+        reported, still not fixed) -- and a `RuntimeError: Out of bounds
+        memory access` wasm trap was logged in the same real-browser
+        session, shortly after clicking around in a Preferences sub-menu.
+        No stack trace or clear correlation to a specific click was
+        available from the `#log` panel alone (this project's only
+        debugging surface for a tab where Safari's dev tools don't work),
+        so cause and effect couldn't be established with confidence.
+        Read `crosshair_dialog()` (`preferences.cpp`) and
+        `Crosshairs_Render()` (`Crosshairs_SDL.cpp`) end to end looking
+        for an Emscripten-specific bug in the cooperative conversion or
+        an out-of-range index/rect from a slider-driven value -- found
+        nothing conclusive: the dialog's cooperative conversion looks
+        structurally identical to the other 11 that work correctly
+        (including its use of `set_processing_function()`, which *is*
+        still invoked from `pump_once()`), and `Crosshairs_Render()`'s
+        drawing all goes through `SDL_FillRect()`/line-drawing that SDL
+        itself clips to the surface, not raw pointer arithmetic. Given no
+        stack trace and no concrete lead, didn't attempt a guess-fix here
+        -- this needs either a real repro with more targeted logging
+        (e.g. logging each Accept/Cancel click and each slider drag in
+        this specific dialog) or a way to capture an actual stack trace
+        from the `RuntimeError`, neither done yet.
+      - "Software rendering options" sub-menu **renders a copy of itself
+        as its background, top-left** -- the same symptom previously
+        reported for "Mouse Advanced"/"Controller Advanced" (see the
+        bug list above), now seen in a third, different sub-dialog. Not
+        investigated this pass (found while investigating the two bugs
+        above) -- likely the same underlying cause across all three
+        dialogs given the identical symptom, worth investigating as one
+        bug rather than three once picked back up.
       - [ ] **Slider still unresponsive after the resolution fix (M5)** --
         re-reported in a real browser well after "resolution is correct"
         was separately confirmed, so it's *not* simply downstream of that
@@ -2032,7 +2074,55 @@ there was no way to verify it actually worked.
         changes, but never exercised against a non-loopback device before
         now -- actually queues/plays buffers correctly against Emscripten's
         OpenAL port).
-- [x] **M6 — Save games / prefs persistence** -- superseded by M4i (IDBFS
+  - [x] **Cosmetic: upload widget didn't list "Music" among recognized
+        files (M5)** -- noticed while investigating the sound bug above:
+        `Music.ogg` genuinely is mounted (confirmed in the `#log` panel's
+        own "/data top level: ..." listing), so this was never actually
+        related to the silence -- `web/src/upload/knownFileTypes.ts`'s
+        `KNOWN_SCENARIO_FILE_TYPES` table (used only for the friendly
+        "Recognized: ..." summary text, explicitly documented as not
+        affecting what actually gets uploaded) just didn't have an entry
+        for `.ogg`. Added `{ extension: "ogg", label: "Music" }`. Existing
+        `knownFileTypes`/`collectFiles`/`UploadWidget` tests still pass;
+        `tsc --noEmit` clean.
+  - [ ] **Third real-browser retest: AudioContext confirmed suspended,
+        then successfully resumed on the first click -- still no audible
+        sound.** Log showed `[audio] AudioContext state: suspended` right
+        after creation, then `[audio] AudioContext resumed, state now:
+        running` on the very next click (our new safety-net listener or
+        libopenal.js's own built-in one, can't tell which fired first) --
+        confirming autoplay suspension was real, but ruling it out as the
+        *whole* story, since sound stayed silent even once running. A
+        second "resumed" message appeared much later in the same log,
+        implying the device/context got recreated at some point after the
+        first resume (consistent with `OpenALManager::Init()`'s existing
+        `Shutdown()`-and-recreate path firing again, e.g. from a
+        Preferences change) -- each recreation needs its own fresh
+        gesture-triggered resume, which the safety net (not just
+        libopenal.js's one-time-only listener) should now cover going
+        forward.
+      - Read through `AudioPlayer.cpp`'s `AssignSource()`/`FillBuffers()`/
+        `Play()`/`Update()` end to end looking for anything loopback-
+        specific or otherwise broken against a real device -- found
+        nothing; every call is a plain, standard `alSourceQueueBuffers`/
+        `alBufferData`/`alSourcePlay`/`alGetSourcei` with no dependency on
+        `alcRenderSamplesSOFT` or any other loopback-only API, so this
+        code should behave identically regardless of which device mode is
+        active. Couldn't find a concrete bug by reading alone.
+      - Added one more throttled diagnostic instead of a further guess:
+        `OpenALManager::Tick()` now logs (once per ~3 real seconds)
+        `audio_players_queue.size()` plus the current master/music volume,
+        guarded `#ifdef __EMSCRIPTEN__`. This distinguishes two very
+        different remaining possibilities that look identical from the
+        outside ("no sound") -- an empty queue means the game itself
+        isn't even trying to play anything (bug is upstream, in
+        `SoundManager`/`Music`'s own decision to call `PlaySound()`/
+        `PlayMusic()`, or in loading `Sounds.sndA`/`Music.ogg` in the
+        first place), while a non-empty queue means sources are being
+        assigned and buffers queued/played, but OpenAL just isn't
+        producing audible output for some other reason (worth checking
+        `alGetError()` more thoroughly, or gain-staging, at that point).
+        Compiles clean. **Not yet re-tested in a real browser.**
       persistence) above, done as part of the save/load milestone rather
       than as a separate later pass.
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)

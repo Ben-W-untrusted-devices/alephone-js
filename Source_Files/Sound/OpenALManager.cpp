@@ -260,6 +260,23 @@ void OpenALManager::Tick() {
 	// call needed afterward: OpenAL renders/outputs audio itself once
 	// sources are queued and playing, it isn't pulled into a buffer we own.
 	if (p_UsingLoopback || !process_audio_active || paused_audio) return;
+#ifdef __EMSCRIPTEN__
+	// Web port diagnostic (see ../../WEB_PORT_PLAN.md, M5): AudioContext is
+	// confirmed running now, but real-browser testing still reports total
+	// silence -- this narrows down whether the game is even attempting to
+	// queue anything (empty queue -> look upstream, at SoundManager/Music)
+	// versus queuing sources that just never produce audible output (non-
+	// empty queue -> look at AudioPlayer/OpenAL state itself). Throttled to
+	// roughly once every 3 seconds to stay readable in the #log panel.
+	// Safe to remove once root-caused.
+	static uint32 last_tick_log = 0;
+	uint32 now = machine_tick_count();
+	if (now - last_tick_log >= 3 * MACHINE_TICKS_PER_SECOND) {
+		last_tick_log = now;
+		fprintf(stderr, "[audio tick] queue_size=%zu master_volume=%.3f music_volume=%.3f\n",
+			audio_players_queue.size(), master_volume.load(), music_volume.load());
+	}
+#endif
 	ProcessAudioQueue();
 }
 

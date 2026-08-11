@@ -20,6 +20,7 @@ export const KNOWN_SCENARIO_FILE_TYPES: readonly KnownFileType[] = [
   { extension: "phya", label: "Physics" },
   { extension: "sgaa", label: "Saved Game" },
   { extension: "fila", label: "Film/Replay" },
+  { extension: "ogg", label: "Music" },
 ];
 
 export function recognizeFileType(fileName: string): KnownFileType | undefined {
