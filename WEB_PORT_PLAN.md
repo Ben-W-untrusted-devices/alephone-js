@@ -1559,6 +1559,96 @@ here is implicit, not explicit permission to redistribute.
         the resolution fix, this needs real gameplay data and real
         rendering to actually exercise the code path in question, neither
         of which the headless Node harness can provide.
+  - [x] **User retested: no exception was caught, and the freeze itself
+        was gone** (heartbeat never stopped) — but the underlying bug
+        persisted: "the auto-demo timer expired (skipped on web port)"
+        (a log line that only fires from `_display_main_menu` idle
+        processing) appeared after starting a game and pressing a key,
+        meaning `game_state` had genuinely, cleanly reverted to the main
+        menu -- not a visual artifact, no exception involved.
+  - [x] **Root-caused via `begin_game()`'s exact code structure**: the
+        code immediately following the `try_and_display_chapter_screen()`
+        call at its `_single_player` call site -- `new_game()`, then
+        `start_game()` (which sets `game_state.state = _game_in_progress`
+        and enables keyboard control) -- used to only run *after* the
+        chapter screen call returned, back when that call blocked. Once
+        converted to non-blocking, that code now runs *immediately*,
+        racing ahead of the chapter screen actually finishing: gameplay
+        gets fully set up while the chapter screen is still cooperatively
+        pumping in the background, and since `main_event_loop_iteration()`
+        gives an active chapter screen *exclusive* per-frame priority (same
+        as the cooperative-dialog check), real gameplay rendering never
+        runs a second time while it's still up -- explaining "renders
+        exactly one frame." Then, whatever input the user provides gets
+        read by the chapter screen's own "click or key to dismiss" logic
+        (not gameplay input at all), and `finish_chapter_screen()` restores
+        `game_state.state` to `existing_state` -- captured *before*
+        `start_game()` ever ran, i.e. the main menu -- discarding the fact
+        that gameplay had already been set up in the meantime. Explains
+        every reported symptom exactly.
+  - [x] **Fixed**: gave the chapter-screen mechanism an optional
+        `on_dismissed` completion callback (`ChapterScreenState::on_dismissed`,
+        invoked by `finish_chapter_screen()`), and added it as a 4th
+        parameter to `try_and_display_chapter_screen()` (both platforms'
+        definitions, default `nullptr` so the other two call sites --
+        `interface.cpp`'s epilogue-screen loop and level-transition path,
+        *not yet fixed*, see below -- don't need touching). Native runs it
+        inline before returning (already synchronous, so this is a no-op
+        behavior change); Emscripten stores it for later if a screen is
+        actually shown, or runs it inline immediately if not (nothing to
+        wait for). `begin_game()`'s `_single_player` call site now wraps
+        its own post-chapter-screen code (`new_game()`/`start_game()`/
+        cleanup) in a continuation lambda passed as that callback, instead
+        of leaving it to run immediately after the call.
+      - **A real subtlety in this fix**: `starts[]` (a C array local to
+        `begin_game()`) can't be captured by value in a lambda directly --
+        copied into a `std::vector` via init-capture instead. More
+        importantly, `begin_game()`'s own return value (`success`, reflecting
+        whether the game actually started) used to get reassigned by the
+        code that's now inside the lambda -- capturing `&success` by
+        reference would let native's synchronous case keep working, but
+        would be a dangling-reference write in Emscripten's genuinely-
+        deferred case (the lambda can run *after* `begin_game()` has
+        already returned and its stack frame is gone). Used a heap-shared
+        `std::shared_ptr<bool>` instead: safe to write from either timing,
+        and `begin_game()` reads it back into `success` only for the
+        synchronous paths (native always; Emscripten when no chapter
+        screen actually needed showing) where it's guaranteed to already
+        hold the real answer. In the genuinely-deferred Emscripten case,
+        `success` keeps its earlier (pre-chapter-screen) value -- a known,
+        accepted limitation, since the one caller that both hits this path
+        *and* checks the return value, `handle_edit_map()`, is editor-only
+        and not reachable from the web port's UI; the actual "Begin New
+        Game" menu path (`do_menu_item_command`'s `iNewGame` case) already
+        discards `begin_game()`'s return value entirely.
+      - Compiles clean. Verified no regression in the Node harness for
+        everything Node *can* exercise (Preferences + nested dialogs still
+        work, 30+ heartbeats). **Could not get a clean additional Node
+        verification specific to this fix**: a fresh headless run hit an
+        unrelated, pre-existing Node-environment limitation first (SDL
+        audio init failing with "No audio context available" inside
+        `callMain()` itself, before `begin_game()` ever runs -- Node has no
+        real Web Audio API), and separately, `alert_user()`'s
+        `!MainScreenVisible()` fallback path calls the browser's native
+        `alert()`, which doesn't exist in Node at all (real browsers have
+        it) -- neither is a regression from this change, just further
+        confirmation that Node fundamentally can't exercise real gameplay
+        state. **Not yet confirmed in a real browser.**
+  - [ ] **Known, not-yet-fixed same-shaped bugs**: the other two
+        `try_and_display_chapter_screen()` call sites have the identical
+        "caller's code used to run only after this blocked" problem and
+        were *not* touched by this fix (both still pass no callback,
+        preserving their current, still-broken-under-Emscripten behavior):
+        the level-transition path (`interface.cpp`, calls `goto_level()`
+        and `start_game(..., true)` immediately after) and, worse, the
+        end-game epilogue screens, which call
+        `try_and_display_chapter_screen()` **in a loop** -- since
+        `g_chapter_screen` is a single state slot, not a queue, a
+        non-blocking loop would just overwrite each screen's registration
+        with the next before any of them actually display. Neither is
+        reachable from the "Begin New Game" flow the user has been testing
+        (level transitions and the ending are both further into actual
+        gameplay), so lower priority than what's fixed here, but real.
 - [ ] **M5 — Audio**
 - [ ] **M6 — Save games / prefs persistence**
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)

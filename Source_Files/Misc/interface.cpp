@@ -361,7 +361,13 @@ static void update_interface_fades(void);
 static void interface_fade_out(short pict_resource_number, bool fade_music);
 static bool can_interface_fade_out(void);
 static void transfer_to_new_level(short level_number);
-static void try_and_display_chapter_screen(short level, bool interface_table_is_valid, bool text_block);
+// Web port: on_dismissed, if given, runs once this screen has actually
+// finished (immediately, inline, on native since it blocks; later, once
+// dismissed, under Emscripten -- see ChapterScreenState::on_dismissed).
+// Callers with code that must only run after the screen finishes (e.g.
+// begin_game() starting the level) need to pass their continuation here
+// instead of just writing it after the call, now that this doesn't block.
+static void try_and_display_chapter_screen(short level, bool interface_table_is_valid, bool text_block, std::function<void()> on_dismissed = nullptr);
 
 static screen_data *get_screen_data(
 	short index);
@@ -2678,28 +2684,71 @@ static bool begin_game(
 			interface_fade_out(MAIN_MENU_BASE, true);
 		}
 
+		// Web port (see ../../WEB_PORT_PLAN.md, M4h): try_and_display_chapter_screen()
+		// no longer blocks under Emscripten -- this continuation used to
+		// just be the rest of this function, relying on the chapter-screen
+		// call below having *already fully finished* by the time execution
+		// reached here. Now it has to be deferred until the screen actually
+		// finishes (on_dismissed), or it races ahead: start_game() below
+		// would set _game_in_progress while the chapter screen is still
+		// cooperatively pumping in the background (and taking exclusive
+		// per-frame priority over actual gameplay rendering -- see
+		// main_event_loop_iteration()), and the screen finishing later
+		// would then incorrectly restore game_state to whatever it was
+		// *before* the game started. Confirmed exactly this in real-browser
+		// testing: gameplay rendered one frame and froze, and any keypress
+		// (the chapter screen's own dismiss-on-any-input logic) bounced
+		// back to the main menu.
+		//
+		// starts[] is a C array, so it can't be captured by value directly
+		// -- copied into a vector instead (small, only copied once).
+		// success_out is a heap-shared flag rather than capturing &success
+		// by reference: this lambda runs synchronously (native, and
+		// Emscripten when no screen actually needs to be shown) or later,
+		// after this function has already returned (Emscripten, screen
+		// shown) -- in that second case a `[&]`-style reference back into
+		// this stack frame would dangle. success is only ever read below
+		// once the lambda is known to have already run.
+		auto success_out = std::make_shared<bool>(false);
+		auto continue_starting_game = [=, starts_copy = std::vector<player_start_data>(starts, starts + MAXIMUM_NUMBER_OF_PLAYERS)]() mutable {
+			Plugins::instance()->set_mode(number_of_players > 1 ? Plugins::kMode_Net : Plugins::kMode_Solo);
+			Crosshairs_SetActive(player_preferences->crosshairs_active);
+			LoadHUDLua();
+			RunLuaHUDScript();
+
+			bool started = is_saved_game_replay() ? make_restored_game_relevant(false, starts_copy.data(), number_of_players) :
+				new_game(number_of_players, is_networked, &game_information, starts_copy.data(), &entry);
+
+			if(started)
+			{
+				start_game(user, false);
+			} else {
+				clean_up_after_failed_game(user == _network_player, record_game, clean_up_on_failure);
+			}
+			*success_out = started;
+		};
+
 		/* Try to display the first chapter screen.. */
 		if (user != _network_player && user != _demo && !is_saved_game_replay())
 		{
 			FindLevelMovie(entry.level_number);
 			show_movie(entry.level_number);
-			try_and_display_chapter_screen(entry.level_number, false, false);
+			try_and_display_chapter_screen(entry.level_number, false, false, continue_starting_game);
 		}
-
-		Plugins::instance()->set_mode(number_of_players > 1 ? Plugins::kMode_Net : Plugins::kMode_Solo);
-		Crosshairs_SetActive(player_preferences->crosshairs_active);
-		LoadHUDLua();
-		RunLuaHUDScript();
-		
-		success = is_saved_game_replay() ? make_restored_game_relevant(false, starts, number_of_players) :
-			new_game(number_of_players, is_networked, &game_information, starts, &entry);
-
-		if(success)
+		else
 		{
-			start_game(user, false);
-		} else {
-			clean_up_after_failed_game(user == _network_player, record_game, clean_up_on_failure);
+			continue_starting_game();
 		}
+		// Reflects the real outcome for every synchronous path (native
+		// always; Emscripten whenever no chapter screen actually needed
+		// showing). If a chapter screen *was* shown under Emscripten,
+		// continue_starting_game() hasn't run yet -- this function has
+		// already returned by the time it does, so there's no way to
+		// reflect the eventual outcome here; success_out simply keeps its
+		// initial value in that case. The one caller that both hits this
+		// path and checks begin_game()'s return value, handle_edit_map(),
+		// is editor-only and not reachable from the web port's UI.
+		success = *success_out;
 	} else {
 		/* This means that some weird replay problem happened: */
 		/*  1) User cancelled */
@@ -3307,6 +3356,12 @@ namespace {
 		bool scroll_vertical = false;
 		int picture_width = 0, picture_height = 0;
 		uint64_t scroll_start_tick = 0;
+		// Web port: callers whose own code used to run only after this
+		// screen finished (native's version blocks) -- e.g. begin_game()
+		// starting the actual level -- need that code deferred until the
+		// screen actually dismisses now that this doesn't block. See
+		// try_and_display_chapter_screen()'s on_dismissed parameter.
+		std::function<void()> on_dismissed;
 	};
 	ChapterScreenState g_chapter_screen;
 
@@ -3327,8 +3382,18 @@ static void finish_chapter_screen(void)
 		g_chapter_screen.soundPlayer->AskStop();
 	g_chapter_screen.soundPlayer.reset();
 	g_chapter_screen.scroll_surface.reset();
+	// Restoring existing_state here matches native's version exactly (see
+	// its comment) -- harmless there because the caller's own code, if any,
+	// runs immediately afterward in the same call and overwrites it (e.g.
+	// begin_game() -> start_game() setting _game_in_progress). Take the
+	// callback out before invoking it, in case it re-enters (e.g. shows
+	// another chapter screen).
 	game_state.state = g_chapter_screen.existing_state;
 	g_chapter_screen.active = false;
+	auto on_dismissed = std::move(g_chapter_screen.on_dismissed);
+	g_chapter_screen.on_dismissed = nullptr;
+	if (on_dismissed)
+		on_dismissed();
 }
 
 void update_chapter_screen(void)
@@ -3412,10 +3477,14 @@ void update_chapter_screen(void)
 static void try_and_display_chapter_screen(
 	short level,
 	bool interface_table_is_valid,
-	bool text_block)
+	bool text_block,
+	std::function<void()> on_dismissed)
 {
 	if (Movie::instance()->IsRecording() || !shell_options.replay_directory.empty())
+	{
+		if (on_dismissed) on_dismissed();
 		return;
+	}
 
 	short pict_resource_number = get_screen_data(_display_chapter_heading)->screen_base + level;
 	/* If the picture exists... */
@@ -3476,6 +3545,7 @@ static void try_and_display_chapter_screen(
 			g_chapter_screen.text_block = text_block;
 			g_chapter_screen.wait_ticks = text_block ? (uint32)-1 : 10 * MACHINE_TICKS_PER_SECOND;
 			g_chapter_screen.active = true;
+			g_chapter_screen.on_dismissed = std::move(on_dismissed);
 
 			LoadedResource rsrc;
 			get_picture_resource_from_scenario(pict_resource_number, rsrc);
@@ -3504,16 +3574,23 @@ static void try_and_display_chapter_screen(
 		}
 		game_state.state= existing_state;
 	}
+	// No screen was actually shown (no picture, or clut allocation failed)
+	// -- nothing to wait for, so run the continuation right away.
+	if (on_dismissed) on_dismissed();
 }
 #else
 /* Note that this is modal. This sucks... */
 static void try_and_display_chapter_screen(
 	short level,
 	bool interface_table_is_valid,
-	bool text_block)
+	bool text_block,
+	std::function<void()> on_dismissed)
 {
 	if (Movie::instance()->IsRecording() || !shell_options.replay_directory.empty())
+	{
+		if (on_dismissed) on_dismissed();
 		return;
+	}
 
 	short pict_resource_number = get_screen_data(_display_chapter_heading)->screen_base + level;
 	/* If the picture exists... */
@@ -3579,6 +3656,7 @@ static void try_and_display_chapter_screen(
 		}
 		game_state.state= existing_state;
 	}
+	if (on_dismissed) on_dismissed();
 }
 #endif
 
