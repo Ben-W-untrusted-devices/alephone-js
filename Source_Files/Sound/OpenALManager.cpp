@@ -85,6 +85,21 @@ bool OpenALManager::Init(const AudioParameters& parameters) {
 		if (parameters.hrtf != instance->audio_parameters.hrtf || parameters.rate != instance->audio_parameters.rate
 			|| parameters.channel_type != instance->audio_parameters.channel_type || parameters.sample_frame_size != instance->audio_parameters.sample_frame_size) {
 
+#ifdef __EMSCRIPTEN__
+			// Web port diagnostic (see ../../WEB_PORT_PLAN.md, M5): real-browser
+			// reports of music/audio dying right when a dialog (Preferences,
+			// Continue Saved Game) opens -- this is the one place OpenALManager
+			// destroys and recreates its whole device/context (a fresh
+			// AudioContext, needing its own gesture-triggered resume, and every
+			// existing source/queue gone), so confirming whether -- and why --
+			// this path is actually being hit is the fastest way to find out if
+			// that's the cause. Safe to remove once root-caused.
+			fprintf(stderr, "[audio] Init() reinitializing: hrtf %d->%d rate %u->%u channel_type %d->%d sample_frame_size %u->%u\n",
+				instance->audio_parameters.hrtf, parameters.hrtf,
+				instance->audio_parameters.rate, parameters.rate,
+				(int)instance->audio_parameters.channel_type, (int)parameters.channel_type,
+				instance->audio_parameters.sample_frame_size, parameters.sample_frame_size);
+#endif
 			Shutdown();
 
 		} else {
@@ -213,6 +228,25 @@ void OpenALManager::UpdateListener() {
 	ALfloat velocity[] = { (float)listener.velocity.i / WORLD_ONE,
 						   (float)listener.velocity.k / WORLD_ONE,
 						   (float)listener.velocity.j / WORLD_ONE };
+
+#ifdef __EMSCRIPTEN__
+	// Web port diagnostic (see ../../WEB_PORT_PLAN.md, M5): real-browser
+	// reports of a hard crash ("Out of bounds memory access") specifically
+	// on entering real gameplay (Begin New Game / Continue Saved Game) --
+	// listener position/orientation is real 3D-positional AL state that
+	// was never exercised while only menu UI sounds worked. Only logs if
+	// something is actually non-finite, so this stays silent in normal
+	// operation. Safe to remove once root-caused.
+	auto allFinite = [](const ALfloat* v, int n) {
+		for (int i = 0; i < n; i++) if (!std::isfinite(v[i])) return false;
+		return true;
+	};
+	if (!allFinite(vectorDirection, 6) || !allFinite(position, 3) || !allFinite(velocity, 3)) {
+		fprintf(stderr, "[audio] UpdateListener non-finite value! pos=(%f,%f,%f) vel=(%f,%f,%f) dir=(%f,%f,%f,%f,%f,%f)\n",
+			position[0], position[1], position[2], velocity[0], velocity[1], velocity[2],
+			vectorDirection[0], vectorDirection[1], vectorDirection[2], vectorDirection[3], vectorDirection[4], vectorDirection[5]);
+	}
+#endif
 
 	alListenerfv(AL_ORIENTATION, vectorDirection);
 	alListenerfv(AL_POSITION, position);

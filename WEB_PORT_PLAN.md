@@ -2250,8 +2250,71 @@ there was no way to verify it actually worked.
         1.0f)` at the call site -- applied on both platforms (not
         Emscripten-gated), since native OpenAL doesn't reject 0 but the
         clamp is harmless there too given real configured distances are
-        always far above this floor. Compiles clean. **Not yet re-tested
-        in a real browser.**
+        always far above this floor. Compiles clean.
+  - [ ] **Seventh real-browser retest: the `AL_MAX_DISTANCE` fix worked --
+        music survives menu navigation now -- but three more problems
+        surfaced once further into the game (M5):**
+      - **Music stops the instant Preferences or "Continue Saved Game" is
+        opened.** Not yet root-caused. Leading hypothesis: `OpenALManager::Init()`
+        gets called again with different `AudioParameters` than the ones
+        already active, hitting its existing `Shutdown()`-and-recreate
+        path -- which would explain the *second*
+        `[audio] AudioContext resumed, state now: running` line seen
+        partway through the same real-browser log (a freshly recreated
+        context starts suspended again and needs its own gesture-
+        triggered resume; the one-time-per-context nature of that is
+        exactly what M5's earlier "Third real-browser retest" entry
+        already flagged as a risk). Not confirmed -- didn't want to
+        guess-fix a reinit path without evidence after the button-
+        debounce misfire earlier in M5. Added two diagnostics instead:
+        `SoundManager::SetStatus(active)` now logs every call (confirms
+        whether/how often it's invoked), and `OpenALManager::Init()`
+        logs the specific before/after parameter values whenever it
+        decides to `Shutdown()` and recreate (confirms *which* parameter
+        changed, if this path is hit at all).
+      - **Starting a new game or loading a save locks up the browser** --
+        a real regression from something that worked back at alpha-1.0,
+        and a different failure mode than the `AL_MAX_DISTANCE` one: the
+        log shows a generic `RuntimeError: Out of bounds memory access`
+        (a raw wasm trap, not a JS-side `RangeError` -- confirmed
+        `libopenal.js` itself contains no `throw`/`RangeError` of its own,
+        so this is either a genuine C++-side memory bug or another
+        strict-native-Web-Audio-API rejection surfacing differently).
+        Correlates strongly with entering real gameplay specifically --
+        every audio code path confirmed working so far was exercised only
+        from menu UI sounds; real 3D positional audio (listener
+        position/orientation, per-source 3D position, driven by actual
+        level/monster data) has never been reached until now. Checked
+        Emscripten's `alListenerfv`/`alSource3f` dispatch for the same
+        class of "unrecognized parameter" gap already fixed twice this
+        session -- `AL_POSITION`/`AL_VELOCITY`/`AL_ORIENTATION` are all
+        properly recognized there, so this isn't a third instance of
+        that. Added finite-value guards instead (only firing, and
+        logging, if a computed position/orientation/velocity value is
+        actually non-finite) at `OpenALManager::UpdateListener()` and
+        `SoundPlayer::SetUpALSourceIdle()`'s 3D position calc -- both
+        involve a `/ WORLD_ONE` division that would produce `NaN`/`Infinity`
+        given the right (buggy) input, which real Web Audio position
+        setters may reject as unforgivingly as `maxDistance` did.
+        Deliberately silent in normal operation (only logs on an actual
+        non-finite value), so if nothing prints on the next crash, this
+        hypothesis is ruled out and the search moves elsewhere (next
+        candidate: the obstruction/behavior-parameter table lookups in
+        `SetUpALSource3D()`, or something entirely non-audio-related given
+        this is also literally the first time actual gameplay has run
+        since several other systems changed this session).
+      - **Crosshair Settings' Accept/Cancel still don't work**, now
+        confirmed as a *separate* bug from the dialog-rendering fix (the
+        background is confirmed correct now, per this same report) --
+        the earlier "shared `crosshair_binders` global, freed out from
+        under a second concurrent instance" theory doesn't apply either,
+        since there's no longer a second instance to begin with. No new
+        lead yet on this one; not re-investigated this pass given the
+        other two issues took priority. Needs a fresh look once the
+        crash and music-stop issues are settled, ideally with a report of
+        whether clicking Accept/Cancel does *anything* visible (button
+        press animation, etc.) or is completely inert.
+      - Compiles clean. **Not yet re-tested in a real browser.**
 - [x] **M6 — Save games / prefs persistence** -- superseded by M4i (IDBFS
       persistence) above, done as part of the save/load milestone rather
       than as a separate later pass.

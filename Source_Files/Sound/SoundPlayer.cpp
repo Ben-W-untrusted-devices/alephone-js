@@ -210,6 +210,15 @@ SetupALResult SoundPlayer::SetUpALSourceIdle() {
 
 		alSource3f(audio_source->source_id, AL_DIRECTION, u, w, v);
 #endif
+#ifdef __EMSCRIPTEN__
+		// Web port diagnostic (see ../../WEB_PORT_PLAN.md, M5; OpenALManager::UpdateListener()
+		// has the fuller explanation): only logs if non-finite. Safe to
+		// remove once the real-gameplay "Out of bounds memory access"
+		// crash is root-caused.
+		if (!std::isfinite(positionX) || !std::isfinite(positionY) || !std::isfinite(positionZ)) {
+			fprintf(stderr, "[audio] SoundPlayer 3D position non-finite! pos=(%f,%f,%f)\n", positionX, positionY, positionZ);
+		}
+#endif
 		alSource3f(audio_source->source_id, AL_POSITION, positionX, positionZ, positionY);
 		result = SetUpALSource3D();
 	}
