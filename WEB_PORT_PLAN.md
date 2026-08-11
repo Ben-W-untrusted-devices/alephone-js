@@ -2146,7 +2146,37 @@ there was no way to verify it actually worked.
         assigned and buffers queued/played, but OpenAL just isn't
         producing audible output for some other reason (worth checking
         `alGetError()` more thoroughly, or gain-staging, at that point).
-        Compiles clean. **Not yet re-tested in a real browser.**
+        Compiles clean.
+  - [x] **Fourth real-browser retest: real signal at last -- a player
+        genuinely gets queued, then disappears again almost immediately
+        (M5).** Log showed `queue_size=1` right when a level's music
+        would start, then `queue_size=0` on the very next tick --
+        confirming the game *is* correctly calling `PlayMusic()`/
+        `PlaySound()` (ruling out the "game never tries to play anything"
+        branch of the previous diagnostic's hypothesis), but whatever got
+        queued fails and gets dropped almost immediately afterward.
+        `OpenALManager::ProcessAudioQueue()`'s per-player check
+        (`!stop_signal && AssignSource() && Update() && Play()`) is a
+        single short-circuited expression, so there was no way to tell
+        *which* of the three calls returned false. Rewrote it (guarded
+        `#ifdef __EMSCRIPTEN__`; native keeps the original one-line
+        expression untouched) to evaluate the same three calls in the
+        same short-circuited order -- `Update()`/`Play()` are still never
+        called after an earlier failure, since `AudioPlayer::Play()`
+        dereferences `audio_source` unconditionally and would crash if
+        `AssignSource()` had failed -- capturing which stage was actually
+        reached, and logs `assigned=%d updated=%d played=%d` whenever a
+        non-stopped player fails. Compiles clean. **Not yet re-tested in
+        a real browser** -- this should finally identify whether the
+        problem is running out of sources (`AssignSource()` -- unlikely,
+        the pool has 128 after the earlier `GenerateSources()` fix, and
+        this would be the very first sound of the session), a parameter-
+        sync problem (`Update()`), or -- most likely, if `Music.ogg`'s
+        decoding is somehow not producing samples under Emscripten despite
+        libsndfile/libvorbis being linked and the file being confirmed
+        present at `/data/Music.ogg` -- `Play()` returning false because
+        zero buffers ever got filled/queued.
+- [x] **M6 — Save games / prefs persistence** -- superseded by M4i (IDBFS
       persistence) above, done as part of the save/load milestone rather
       than as a separate later pass.
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)

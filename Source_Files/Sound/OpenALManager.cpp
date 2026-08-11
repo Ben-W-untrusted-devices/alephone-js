@@ -147,7 +147,36 @@ void OpenALManager::ProcessAudioQueue() {
 	for (int i = 0; i < audio_players_queue.size(); i++) {
 
 		auto audio = audio_players_queue.front();
+
+#ifdef __EMSCRIPTEN__
+		// Web port diagnostic (see ../../WEB_PORT_PLAN.md, M5): real-browser
+		// testing shows players genuinely get queued (queue_size briefly
+		// non-zero) then disappear again almost immediately -- meaning
+		// something in this exact chain returns false right away. Evaluated
+		// step by step (still short-circuiting exactly like the single
+		// expression below, so AssignSource()/Update()/Play() are never
+		// called out of order or after an earlier failure) so the log says
+		// which stage actually failed instead of just "didn't play". Safe
+		// to remove once root-caused.
+		bool stepAssigned = false, stepUpdated = false, stepPlayed = false;
+		bool mustStillPlay = false;
+		if (!audio->stop_signal) {
+			stepAssigned = audio->AssignSource();
+			if (stepAssigned) {
+				stepUpdated = audio->Update();
+				if (stepUpdated) {
+					stepPlayed = audio->Play();
+					mustStillPlay = stepPlayed;
+				}
+			}
+		}
+		if (!mustStillPlay && !audio->stop_signal) {
+			fprintf(stderr, "[audio player] failed: assigned=%d updated=%d played=%d\n",
+				stepAssigned, stepUpdated, stepPlayed);
+		}
+#else
 		const bool mustStillPlay = !audio->stop_signal && audio->AssignSource() && audio->Update() && audio->Play();
+#endif
 
 		audio_players_queue.pop_front();
 
