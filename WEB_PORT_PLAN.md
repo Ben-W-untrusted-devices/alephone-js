@@ -1920,17 +1920,31 @@ there was no way to verify it actually worked.
         was a pure C++ logic gap, not a linking problem (the code already
         compiled and ran today; that's how the diagnostic log line got
         produced in the first place).
-      - Compiles/links clean. **Not yet tested in a real browser** --
-        this can't be exercised via the Node harness (no real Web
-        Audio/AudioContext there). Needs: start the engine, confirm the
-        `ALC_SOFT_loopback extension is not supported` log line is
-        followed by a *successful* fallback instead of silence, play a
-        level and confirm both sound effects and music are audible, and
-        listen for stutter/glitching given the streaming refill cadence
-        changed from an SDL-buffer-driven pull to a per-frame-tick push
-        (~16ms, tighter than a typical native buffer callback, but worth
-        confirming empirically).
-- [ ] **M6 — Save games / prefs persistence**
+      - Compiles/links clean.
+  - [x] **Real-browser retest found a second bug, in `GenerateSources()`
+        (M5)** -- the fallback above *did* engage correctly (log confirmed
+        the "falling back to a normal (non-loopback) device" message), but
+        startup then crashed immediately after with `[fatal] Unhandled
+        exception: vector`. Root cause: `GenerateSources()`
+        (`OpenALManager.cpp`) queries `ALC_MONO_SOURCES`/
+        `ALC_STEREO_SOURCES` via `alcGetIntegerv()` to size its source
+        pool, and sums them into `nbSources`. Checked
+        `libopenal.js` directly: Emscripten's OpenAL port reports *both*
+        as `0x7FFFFFFF` (`INT32_MAX`) -- "effectively unlimited," since
+        Web Audio has no hardware source-count limit to report. Summing
+        two `INT32_MAX`s overflows a signed int (UB, wraps negative in
+        practice), and that negative `nbSources` became a huge `size_t`
+        once handed to `std::vector<ALuint> sources_id(nbSources)` --
+        `"Unhandled exception: vector"` is libc++'s generic message for
+        the `std::length_error` a vector constructor throws when the
+        requested size is unreasonable. Fixed by clamping
+        `monoSources`/`stereoSources` to 64 each (128 total) before
+        summing -- comfortably more than this game ever needs
+        concurrently, and avoids `GenerateSources()` (which pre-allocates
+        its whole pool up front) eagerly creating hundreds of real Web
+        Audio node graphs for a device that has no genuine capacity limit
+        to report in the first place. Compiles/links clean. **Not yet
+        re-tested in a real browser.**
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)
 
 ## Status

@@ -422,6 +422,23 @@ bool OpenALManager::GenerateSources() {
 	int monoSources, stereoSources;
 	alcGetIntegerv(p_ALCDevice, ALC_MONO_SOURCES, 1, &monoSources);
 	alcGetIntegerv(p_ALCDevice, ALC_STEREO_SOURCES, 1, &stereoSources);
+
+	// Web port (see ../../WEB_PORT_PLAN.md, M5): Emscripten's OpenAL port
+	// reports both of these as "effectively unlimited" (INT32_MAX each --
+	// Web Audio has no hardware source-count limit to report). Summing them
+	// unclamped overflows a signed int (UB, wraps negative in practice),
+	// which then became a huge size_t once passed to std::vector's
+	// constructor below -- crashing with an uncaught length_error ("Unhandled
+	// exception: vector") before any audio device finished initializing.
+	// Clamp each to a sane cap first; this game never needs anywhere near
+	// this many simultaneous sources regardless of what the device reports,
+	// and each one becomes a real Web Audio node graph under Emscripten
+	// (GenerateSources() pre-allocates the whole pool up front), so keeping
+	// this modest avoids needlessly creating hundreds of them in a browser
+	// tab for a device that has no real capacity limit to report.
+	constexpr int kMaxSourcesPerType = 64;
+	monoSources = std::min(monoSources, kMaxSourcesPerType);
+	stereoSources = std::min(stereoSources, kMaxSourcesPerType);
 	int nbSources = monoSources + stereoSources;
 
 	std::vector<ALuint> sources_id(nbSources);
