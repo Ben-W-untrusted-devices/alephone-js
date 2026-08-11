@@ -1489,37 +1489,61 @@ here is implicit, not explicit permission to redistribute.
         an intermittent click-target-miss). Two dialogs still specifically
         broken, both re-tested via the "Crosshair Settings" dialog (which
         has sliders *and* is one of the two dialogs with this problem):
-      - "Crosshair Settings" **still can't be closed** (previously
-        reported, still not fixed) -- and a `RuntimeError: Out of bounds
-        memory access` wasm trap was logged in the same real-browser
-        session, shortly after clicking around in a Preferences sub-menu.
-        No stack trace or clear correlation to a specific click was
-        available from the `#log` panel alone (this project's only
-        debugging surface for a tab where Safari's dev tools don't work),
-        so cause and effect couldn't be established with confidence.
-        Read `crosshair_dialog()` (`preferences.cpp`) and
-        `Crosshairs_Render()` (`Crosshairs_SDL.cpp`) end to end looking
-        for an Emscripten-specific bug in the cooperative conversion or
-        an out-of-range index/rect from a slider-driven value -- found
-        nothing conclusive: the dialog's cooperative conversion looks
-        structurally identical to the other 11 that work correctly
-        (including its use of `set_processing_function()`, which *is*
-        still invoked from `pump_once()`), and `Crosshairs_Render()`'s
-        drawing all goes through `SDL_FillRect()`/line-drawing that SDL
-        itself clips to the surface, not raw pointer arithmetic. Given no
-        stack trace and no concrete lead, didn't attempt a guess-fix here
-        -- this needs either a real repro with more targeted logging
-        (e.g. logging each Accept/Cancel click and each slider drag in
-        this specific dialog) or a way to capture an actual stack trace
-        from the `RuntimeError`, neither done yet.
-      - "Software rendering options" sub-menu **renders a copy of itself
-        as its background, top-left** -- the same symptom previously
-        reported for "Mouse Advanced"/"Controller Advanced" (see the
-        bug list above), now seen in a third, different sub-dialog. Not
-        investigated this pass (found while investigating the two bugs
-        above) -- likely the same underlying cause across all three
-        dialogs given the identical symptom, worth investigating as one
-        bug rather than three once picked back up.
+      - [x] **Root cause found (M5): these were never a "stale background
+        pixels" rendering bug at all -- screenshots showed the actual
+        dialog title, sliders, and buttons duplicated and diagonally
+        offset (Aleph One's normal nested-dialog cascade offset), meaning
+        a single click on "SOFTWARE RENDERING OPTIONS" or "CROSSHAIR
+        SETTINGS" was opening the dialog *twice*, stacked as if the
+        second were a legitimately nested child of the first.** This
+        also explains "can't be closed": clicking Accept/Cancel on the
+        visible (front, second) instance closes only that one --
+        revealing the still-open first instance underneath, which looks
+        identical and unaffected, reading as "nothing happened."
+      - Root-caused (not just guessed): `w_button_base::mouse_up()`
+        (`sdl_widgets.cpp`) fires `proc(arg)` whenever the release lands
+        within the button's rect, with **no check that a matching
+        `mouse_down()` actually preceded it** -- so a second, spurious
+        `SDL_MOUSEBUTTONUP` for the same button (with no intervening
+        `mouse_down`) fires the button's action again. Traced
+        `dialog::event()`'s widget dispatch, the cooperative dialog
+        stack's nesting handling (`run_dialog_cooperatively()`/
+        `update_cooperative_dialog()`), and `process_events()`'s
+        per-frame event-draining loop end to end looking for how a
+        single physical click could reach `mouse_up()` twice -- ruled all
+        of them out as the mechanism (each processes one `SDL_Event`
+        exactly once; nothing double-dispatches), but couldn't find a way
+        to trace SDL's own Emscripten-backend mouse-event generation
+        itself (no source access to instrument, not reproducible in the
+        Node harness), so the precise origin of the duplicate
+        `SDL_MOUSEBUTTONUP` remains unconfirmed. Fixed the reachable,
+        provably-correct half of this regardless: `mouse_up()` now
+        debounces via a per-button `last_activation_tick`, ignoring a
+        second activation landing within `MACHINE_TICKS_PER_SECOND / 5`
+        (~200ms) of the first -- never a legitimate distinct user click
+        for a settings-dialog button, so safe on native too (not
+        Emscripten-gated).
+      - This also explains the logged `RuntimeError: Out of bounds
+        memory access`: `crosshair_dialog()`'s widget bindings live in a
+        single file-scope global, `crosshair_binders`
+        (`std::unique_ptr<BinderSet>`) -- fine for one instance at a
+        time (matches native's blocking `d.run()` assumption that only
+        one is ever alive), but with two concurrent cooperative instances
+        (the bug above), closing the front one runs its completion
+        callback's `crosshair_binders.reset(0)`, which destroys the
+        *shared* `BinderSet` out from under the still-open back
+        instance's widgets. Its `update_crosshair_display` processing
+        function (still ticking every frame via `pump_once()`) then
+        dereferences the now-null `crosshair_binders` on its next
+        `pump_once()` -- a null-pointer deref, which is exactly what a
+        WASM "out of bounds memory access" trap looks like. Not changed
+        directly (still a latent fragility in `crosshair_dialog()`'s
+        global-singleton assumption), but the debounce fix above removes
+        the only currently-known way to create the second concurrent
+        instance that triggers it.
+      - Compiles clean, applies to all buttons (not just these two
+        dialogs) since the bug is in shared `w_button_base` code. **Not
+        yet re-tested in a real browser.**
       - [ ] **Slider still unresponsive after the resolution fix (M5)** --
         re-reported in a real browser well after "resolution is correct"
         was separately confirmed, so it's *not* simply downstream of that

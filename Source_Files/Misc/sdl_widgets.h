@@ -262,6 +262,11 @@ protected:
 
 	bool down, pressed;
 
+	// Web port (see ../../WEB_PORT_PLAN.md, M5): guards against proc()
+	// firing twice from what should be a single click -- see mouse_up()'s
+	// own comment for why this exists.
+	uint32 last_activation_tick;
+
 	int type;
 	// cache button centers since they are tiled or scaled
 	SDL_Surface *button_c_default;

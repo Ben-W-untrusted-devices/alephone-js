@@ -258,7 +258,7 @@ void w_slider_text::draw(SDL_Surface *s) const
  *  Button
  */
 
-w_button_base::w_button_base(const char *t, action_proc p, void *a, int _type) : widget(_type), text(t), proc(p), arg(a), down(false), pressed(false), type(_type)
+w_button_base::w_button_base(const char *t, action_proc p, void *a, int _type) : widget(_type), text(t), proc(p), arg(a), down(false), pressed(false), last_activation_tick(0), type(_type)
 {
 	rect.w = text_width(text.c_str(), font, style) + get_theme_space(_type, BUTTON_L_SPACE) + get_theme_space(_type, BUTTON_R_SPACE);
 	button_c_default = get_theme_image(_type, DEFAULT_STATE, BUTTON_C_IMAGE, rect.w - get_theme_image(_type, DEFAULT_STATE, BUTTON_L_IMAGE)->w - get_theme_image(_type, DEFAULT_STATE, BUTTON_R_IMAGE)->w);
@@ -379,8 +379,28 @@ void w_button_base::mouse_up(int x, int y)
 	pressed = false;
 	dirty = true;
 	get_owning_dialog()->draw_dirty_widgets();
-	
-	if (proc && x >= 0 && x <= rect.w && y >= 0 && y <= rect.h)
+
+	// Web port (see ../../WEB_PORT_PLAN.md, M5): real-browser reports of
+	// buttons that open a sub-dialog (Software Rendering Options,
+	// Crosshair Settings, Mouse/Controller Advanced) opening *two*
+	// stacked copies of the same dialog from what was a single click --
+	// i.e. proc() firing twice. Traced the dialog-side machinery
+	// end to end (dialog::event()'s widget dispatch, the cooperative
+	// dialog stack's nesting handling, process_events()'s event-draining
+	// loop) without finding a way for a single logical click to reach
+	// here twice through it; couldn't pin down the exact duplicate-event
+	// source with the tools available (no way to trace SDL's own
+	// Emscripten-backend event generation, and this isn't reproducible in
+	// the Node harness). Guarding here regardless: this check only
+	// suppresses a *second* activation landing within a tiny window of
+	// the first, which can never be a legitimate distinct user click for
+	// a "open a settings dialog" button -- so it's a safe fix for the
+	// observed symptom even without a confirmed root cause upstream.
+	uint32 now = machine_tick_count();
+	bool debounced = (now - last_activation_tick) < (MACHINE_TICKS_PER_SECOND / 5);
+	last_activation_tick = now;
+
+	if (proc && !debounced && x >= 0 && x <= rect.w && y >= 0 && y <= rect.h)
 		proc(arg);
 }
 
