@@ -2215,11 +2215,43 @@ there was no way to verify it actually worked.
         Obstruction muffling degrades to "always audible" under
         Emscripten (same class of gap as the EFX low-pass filter fix
         earlier in M5) -- acceptable, documented, not a blocker.
-        Compiles clean. **Not yet re-tested in a real browser** -- this
-        is the first fix in this whole investigation with a fully
-        confirmed, reproduced-from-a-real-log root cause rather than a
-        plausible-sounding guess, so reasonably high confidence this
-        actually fixes sound and music both.
+        Compiles clean.
+  - [x] **Sixth real-browser retest: music played initially, but every
+        menu button then killed the music and the button's own action
+        both (M5).** New crash, different from anything before:
+        `[window error] RangeError: maxDistance cannot be set to a
+        non-positive value`, right after a menu click. Root cause: under
+        Emscripten, `AL_MAX_DISTANCE` maps directly to a real Web Audio
+        `PannerNode.maxDistance` property, and the **Web Audio spec is
+        stricter than the OpenAL spec here** -- `maxDistance` must be
+        *strictly positive*; setting it to `0` throws that exact
+        `RangeError`, uncaught, escaping all the way to the browser's
+        global error handler (nothing in the C++/wasm layer can catch a
+        JS exception thrown across an `EM_JS`-style boundary this way).
+        That matches both symptoms at once: a menu click plays a 2D UI
+        sound effect, whose source setup crashed mid-frame, aborting
+        whatever else `main_event_loop_iteration()` was doing that tick
+        (killing the button's own action) and corrupting the audio
+        queue's processing for that tick (killing the music). Three call
+        sites set `AL_MAX_DISTANCE` to `0`: `AudioPlayer::SetUpALSourceInit()`
+        and `SoundPlayer::SetUpALSourceInit()`'s 2D branch (both
+        unconditional placeholders on non-positional sources, where the
+        value is never otherwise used -- skipped under Emscripten, same
+        pattern as the other `SetUpALSourceInit()` fixes) and
+        `SoundPlayer::SetUpALSource3D()`'s per-`Update()` call (the *real*
+        positional-audio distance, driven by `finalBehaviorParameters.distance_max`
+        -- can't skip this one, it's needed for actual 3D falloff).
+        That third one turned out to be genuinely reachable at 0: it
+        interpolates from `sound_transition.current_sound_behavior`
+        (`ComputeVolumeForTransition()`), whose `SoundBehavior` fields
+        (`SoundPlayer.h`) have no default member initializers, so
+        `distance_max` starts at `0` before a sound's first real
+        transition tick. Fixed with `std::max(finalBehaviorParameters.distance_max,
+        1.0f)` at the call site -- applied on both platforms (not
+        Emscripten-gated), since native OpenAL doesn't reject 0 but the
+        clamp is harmless there too given real configured distances are
+        always far above this floor. Compiles clean. **Not yet re-tested
+        in a real browser.**
 - [x] **M6 — Save games / prefs persistence** -- superseded by M4i (IDBFS
       persistence) above, done as part of the save/load milestone rather
       than as a separate later pass.

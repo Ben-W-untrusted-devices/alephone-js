@@ -181,8 +181,19 @@ bool AudioPlayer::SetUpALSourceInit() {
 	alSource3i(audio_source->source_id, AL_DIRECTION, 0, 0, 0);
 	alSourcei(audio_source->source_id, AL_DISTANCE_MODEL, AL_NONE);
 	alSourcei(audio_source->source_id, AL_REFERENCE_DISTANCE, 0);
-	alSourcei(audio_source->source_id, AL_MAX_DISTANCE, 0);
+	// Web port (see ../../WEB_PORT_PLAN.md, M5): under Emscripten,
+	// AL_MAX_DISTANCE maps directly to a real Web Audio PannerNode's
+	// maxDistance property, and the Web Audio spec (unlike the OpenAL spec)
+	// requires it to be strictly positive -- setting it to 0 throws an
+	// uncaught RangeError ("maxDistance cannot be set to a non-positive
+	// value"), confirmed via a real-browser crash right after a menu-click
+	// UI sound tried to initialize. This player is never positional
+	// (AL_SOURCE_RELATIVE is TRUE above), so the actual numeric value is
+	// otherwise unused -- skip it under Emscripten and leave the
+	// PannerNode's own (safely positive) default instead of overwriting it
+	// with an invalid one.
 #ifndef __EMSCRIPTEN__
+	alSourcei(audio_source->source_id, AL_MAX_DISTANCE, 0);
 	alSourcei(audio_source->source_id, AL_DIRECT_FILTER, AL_FILTER_NULL);
 #endif
 

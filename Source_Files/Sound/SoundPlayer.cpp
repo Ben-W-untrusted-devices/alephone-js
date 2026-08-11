@@ -244,7 +244,16 @@ bool SoundPlayer::SetUpALSourceInit() {
 		alSourcei(audio_source->source_id, AL_ROLLOFF_FACTOR, 0);
 		alSource3i(audio_source->source_id, AL_DIRECTION, 0, 0, 0);
 		alSourcei(audio_source->source_id, AL_REFERENCE_DISTANCE, 0);
+		// Web port (see ../../WEB_PORT_PLAN.md, M5; AudioPlayer::SetUpALSourceInit()
+		// has the fuller explanation): AL_MAX_DISTANCE=0 throws an uncaught
+		// Web Audio RangeError under Emscripten (PannerNode.maxDistance must
+		// be strictly positive) -- confirmed via a real-browser crash on
+		// every 2D UI sound (e.g. a menu-click sound). This player is
+		// non-positional here (AL_SOURCE_RELATIVE is TRUE), so the value is
+		// otherwise unused -- skip it and leave the PannerNode default.
+#ifndef __EMSCRIPTEN__
 		alSourcei(audio_source->source_id, AL_MAX_DISTANCE, 0);
+#endif
 	}
 	else {
 		alSourcei(audio_source->source_id, AL_DISTANCE_MODEL, AL_INVERSE_DISTANCE_CLAMPED);
@@ -367,7 +376,17 @@ SetupALResult SoundPlayer::SetUpALSource3D() {
 	const auto finalBehaviorParameters = ComputeVolumeForTransition(behaviorParameters);
 
 	alSourcef(audio_source->source_id, AL_REFERENCE_DISTANCE, finalBehaviorParameters.distance_reference);
-	alSourcef(audio_source->source_id, AL_MAX_DISTANCE, finalBehaviorParameters.distance_max);
+	// Web port (see ../../WEB_PORT_PLAN.md, M5): finalBehaviorParameters.distance_max
+	// can legitimately be (at or near) 0 on a sound's very first Update() --
+	// ComputeVolumeForTransition() interpolates from sound_transition.current_sound_behavior,
+	// whose SoundBehavior fields (SoundPlayer.h) have no default member
+	// initializers, so distance_max starts at 0 there before the first real
+	// transition tick. Under Emscripten, AL_MAX_DISTANCE maps to a real Web
+	// Audio PannerNode's maxDistance, which throws an uncaught RangeError
+	// for any non-positive value (confirmed via a real-browser crash);
+	// native OpenAL has no such restriction, but clamping is harmless there
+	// too since real configured distances are always far above this floor.
+	alSourcef(audio_source->source_id, AL_MAX_DISTANCE, std::max(finalBehaviorParameters.distance_max, 1.0f));
 	alSourcef(audio_source->source_id, AL_ROLLOFF_FACTOR, finalBehaviorParameters.rolloff_factor);
 	alSourcef(audio_source->source_id, AL_MAX_GAIN, finalBehaviorParameters.max_gain * volume);
 	alSourcef(audio_source->source_id, AL_GAIN, finalBehaviorParameters.max_gain * volume);
