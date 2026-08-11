@@ -27,6 +27,9 @@
 #include <string>
 #include <vector>
 #include <time.h>
+#ifdef __EMSCRIPTEN__
+#include <functional>
+#endif
 
 struct QuickSave {
     FileSpecifier save_file;
@@ -65,7 +68,18 @@ private:
 
 bool create_quick_save(void);
 bool delete_quick_save(QuickSave& save);
+#ifdef __EMSCRIPTEN__
+// Web port (see ../../WEB_PORT_PLAN.md, M4h): this dialog blocks the whole
+// tab under Emscripten (see sdl_dialogs.cpp) -- runs cooperatively instead,
+// calling on_result once the user has actually made a choice (or
+// cancelled) instead of returning a bool synchronously. saved_game is
+// written before on_result fires if a save was chosen; the caller must
+// keep it alive until then (e.g. heap-allocated), since this function
+// itself returns immediately.
+void load_quick_save_dialog(FileSpecifier& saved_game, std::function<void(bool)> on_result);
+#else
 bool load_quick_save_dialog(FileSpecifier& saved_game);
+#endif
 size_t saved_game_was_networked(FileSpecifier& saved_game);
 
 #endif

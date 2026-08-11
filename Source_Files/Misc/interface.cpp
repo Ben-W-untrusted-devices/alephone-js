@@ -328,6 +328,12 @@ extern bool shapes_file_is_m1();
 /* ----------- prototypes/PREPROCESS_MAP_MAC.C */
 extern bool load_game_from_file(FileSpecifier& File, bool run_scripts);
 extern bool choose_saved_game_to_load(FileSpecifier& File);
+#ifdef __EMSCRIPTEN__
+// Web port (see ../../WEB_PORT_PLAN.md, M4h): the dialog behind
+// choose_saved_game_to_load() blocks the whole tab under Emscripten --
+// runs cooperatively instead, see load_quick_save_dialog() in QuickSave.h.
+extern void choose_saved_game_to_load(FileSpecifier& File, std::function<void(bool)> on_result);
+#endif
 
 /* ---------------------- prototypes */
 static void display_credits(void);
@@ -2810,6 +2816,35 @@ static void start_game(
 }
 
 // LP: "static" removed
+#ifdef __EMSCRIPTEN__
+void handle_load_game(
+	void)
+{
+	force_system_colors(false);
+	show_cursor(); // JTP: Was hidden by force system colors
+
+	// Web port (see ../../WEB_PORT_PLAN.md, M4h): FileToLoad is heap-
+	// allocated (shared_ptr) rather than a plain local -- this function
+	// returns as soon as choose_saved_game_to_load() registers its cooperative
+	// dialog, well before the user actually picks a save, so a stack local
+	// referenced by that dialog's completion callback would dangle by the
+	// time it fires.
+	auto FileToLoad = std::make_shared<FileSpecifier>();
+	choose_saved_game_to_load(*FileToLoad, [FileToLoad](bool chose_one) {
+		bool success = false;
+		if (chose_one && load_and_start_game(*FileToLoad))
+		{
+			success = true;
+		}
+
+		if (!success)
+		{
+			hide_cursor(); // JTP: Will be shown when fade stops
+			display_main_menu();
+		}
+	});
+}
+#else
 void handle_load_game(
 	void)
 {
@@ -2832,6 +2867,7 @@ void handle_load_game(
 		display_main_menu();
 	}
 }
+#endif
 
 extern bool current_net_game_has_scores();
 

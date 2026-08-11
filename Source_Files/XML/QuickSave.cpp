@@ -296,6 +296,87 @@ private:
 };
 
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#include <emscripten/emscripten.h>
+// Web port (see ../../WEB_PORT_PLAN.md, M4h): browser-native replacements
+// for the desktop file dialogs FileSpecifier::WriteDialog()/ReadDialog()
+// use (FileHandler.cpp) -- those have no Emscripten implementation at all,
+// but a real browser has its own natural equivalents for exactly this
+// "export/import a save file to/from the user's own device" use case:
+// download (Blob + a hidden <a download> click) and upload (a hidden
+// <input type=file>, read via FileReader). Neither needs a synchronous
+// "pick a location" dialog the way the native versions do.
+EM_JS(void, web_download_file, (const char* fs_path, const char* suggested_name), {
+    try {
+        var path = UTF8ToString(fs_path);
+        var name = UTF8ToString(suggested_name);
+        var data = Module.FS.readFile(path);
+        var blob = new Blob([data], { type: "application/octet-stream" });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement("a");
+        a.href = url;
+        a.download = name;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+    } catch (e) {
+        console.error("web_download_file failed:", e);
+    }
+});
+
+// web_on_file_picked() (below) is called back once the user has picked a
+// file (or cancelled/failed) from the hidden <input type=file> this
+// creates on first use; the file's bytes are already written to
+// kWebUploadPath by then.
+EM_JS(void, web_open_file_picker, (), {
+    if (!Module.__a1FileInput) {
+        var input = document.createElement("input");
+        input.type = "file";
+        input.style.display = "none";
+        document.body.appendChild(input);
+        input.addEventListener("change", function() {
+            var file = input.files && input.files[0];
+            input.value = ""; // so picking the same file again still fires 'change'
+            if (!file) {
+                Module._web_on_file_picked(0);
+                return;
+            }
+            var reader = new FileReader();
+            reader.onload = function() {
+                try {
+                    Module.FS.writeFile("/tmp/web_upload.sgaA", new Uint8Array(reader.result));
+                    Module._web_on_file_picked(1);
+                } catch (e) {
+                    console.error("web_open_file_picker: writing upload failed:", e);
+                    Module._web_on_file_picked(0);
+                }
+            };
+            reader.onerror = function() {
+                console.error("web_open_file_picker: FileReader failed:", reader.error);
+                Module._web_on_file_picked(0);
+            };
+            reader.readAsArrayBuffer(file);
+        });
+        Module.__a1FileInput = input;
+    }
+    Module.__a1FileInput.click();
+});
+
+static const char* kWebUploadPath = "/tmp/web_upload.sgaA";
+
+namespace { std::function<void(bool)> g_file_picker_callback; }
+
+extern "C" EMSCRIPTEN_KEEPALIVE void web_on_file_picked(int success)
+{
+    auto callback = std::move(g_file_picker_callback);
+    g_file_picker_callback = nullptr;
+    if (callback)
+        callback(success != 0);
+}
+#endif
+
 const int LOAD_DIALOG_OTHER = 4;
 static void dialog_exit_other(void *arg)
 {
@@ -315,16 +396,24 @@ static void dialog_rename(void *arg)
     w_saves *saves_w = static_cast<w_saves *>(d->get_widget_by_id(iDIALOG_SAVES_W));
     QuickSave sel = saves_w->selected_save();
 
+    // Web port (see ../../WEB_PORT_PLAN.md, M4c-ii; Source_Files/Misc/preferences.cpp's
+    // player_dialog() has the fuller explanation of this pattern): rd is
+    // heap-allocated and aliased by reference under Emscripten.
+#ifdef __EMSCRIPTEN__
+    dialog *rd_heap = new dialog();
+    dialog &rd = *rd_heap;
+#else
     dialog rd;
+#endif
     vertical_placer *placer = new vertical_placer;
-    
+
     horizontal_placer* name_placer = new horizontal_placer;
     w_text_entry *rename_w = new w_save_name(&rd, utf8_to_mac_roman(sel.name).c_str());
     rename_w->enable_mac_roman_input();
     name_placer->dual_add(rename_w->label("Name: "), rd);
     name_placer->dual_add(rename_w, rd);
     placer->add(name_placer, true);
-    
+
     placer->add(new w_spacer(), true);
 
     horizontal_placer* button_placer = new horizontal_placer;
@@ -333,22 +422,41 @@ static void dialog_rename(void *arg)
     w_button* cancel_w = new w_button("CANCEL", dialog_cancel, &rd);
     button_placer->dual_add(cancel_w, rd);
     placer->add(button_placer, true);
-    
+
     rd.set_widget_placer(placer);
     rd.activate_widget(rename_w);
+#ifdef __EMSCRIPTEN__
+    run_dialog_cooperatively(rd_heap, [rd_heap, rename_w, sel, saves_w](int result) mutable {
+        if (result == 0) {
+            sel.name = mac_roman_to_utf8(rename_w->get_text());
+            create_updated_save(sel);
+            saves_w->update_selected(sel);
+        }
+        delete rd_heap;
+    });
+#else
     if (rd.run() == 0) {
         sel.name = mac_roman_to_utf8(rename_w->get_text());
 		create_updated_save(sel);
         saves_w->update_selected(sel);
     }
+#endif
 }
 static void dialog_delete(void *arg)
 {
     dialog *d = static_cast<dialog *>(arg);
     w_saves *saves_w = static_cast<w_saves *>(d->get_widget_by_id(iDIALOG_SAVES_W));
     QuickSave sel = saves_w->selected_save();
-	
-	dialog rd;
+
+    // Web port (see ../../WEB_PORT_PLAN.md, M4c-ii; Source_Files/Misc/preferences.cpp's
+    // player_dialog() has the fuller explanation of this pattern): rd is
+    // heap-allocated and aliased by reference under Emscripten.
+#ifdef __EMSCRIPTEN__
+    dialog *rd_heap = new dialog();
+    dialog &rd = *rd_heap;
+#else
+    dialog rd;
+#endif
 	vertical_placer *placer = new vertical_placer;
 	placer->add(new w_spacer, true);
 	placer->dual_add(new w_static_text("Delete this save?"), rd);
@@ -359,7 +467,7 @@ static void dialog_delete(void *arg)
 	w_saves* selsave_w = new w_saves(saves, 400, 1);
 	placer->dual_add(selsave_w, rd);
 	placer->add(new w_spacer, true);
-	
+
 	horizontal_placer* button_placer = new horizontal_placer;
 	w_button* accept_w = new w_button("DELETE", dialog_ok, &rd);
 	button_placer->dual_add(accept_w, rd);
@@ -369,19 +477,29 @@ static void dialog_delete(void *arg)
 	rd.set_widget_placer(placer);
 	rd.activate_widget(accept_w);
 
-    if (rd.run() == 0 && delete_quick_save(sel)) {
-        saves_w->remove_selected();
-        if (!saves_w->has_selection()) {
-			w_tiny_button* rename_w = static_cast<w_tiny_button *>(d->get_widget_by_id(iDIALOG_RENAME_W));
-            if (rename_w) rename_w->set_enabled(false);
-            w_tiny_button* delete_w = static_cast<w_tiny_button *>(d->get_widget_by_id(iDIALOG_DELETE_W));
-            if (delete_w) delete_w->set_enabled(false);
-            w_tiny_button* export_w = static_cast<w_tiny_button *>(d->get_widget_by_id(iDIALOG_EXPORT_W));
-            if (export_w) export_w->set_enabled(false);
-            w_button* accept_w = static_cast<w_button *>(d->get_widget_by_id(iDIALOG_ACCEPT_W));
-            if (accept_w) accept_w->set_enabled(false);
+    auto finish_delete = [d, sel, saves_w](int result) mutable {
+        if (result == 0 && delete_quick_save(sel)) {
+            saves_w->remove_selected();
+            if (!saves_w->has_selection()) {
+                w_tiny_button* rename_w = static_cast<w_tiny_button *>(d->get_widget_by_id(iDIALOG_RENAME_W));
+                if (rename_w) rename_w->set_enabled(false);
+                w_tiny_button* delete_w = static_cast<w_tiny_button *>(d->get_widget_by_id(iDIALOG_DELETE_W));
+                if (delete_w) delete_w->set_enabled(false);
+                w_tiny_button* export_w = static_cast<w_tiny_button *>(d->get_widget_by_id(iDIALOG_EXPORT_W));
+                if (export_w) export_w->set_enabled(false);
+                w_button* accept_w = static_cast<w_button *>(d->get_widget_by_id(iDIALOG_ACCEPT_W));
+                if (accept_w) accept_w->set_enabled(false);
+            }
         }
-    }
+    };
+#ifdef __EMSCRIPTEN__
+    run_dialog_cooperatively(rd_heap, [rd_heap, finish_delete](int result) mutable {
+        finish_delete(result);
+        delete rd_heap;
+    });
+#else
+    finish_delete(rd.run());
+#endif
 }
 static void dialog_export(void *arg)
 {
@@ -391,7 +509,12 @@ static void dialog_export(void *arg)
     std::string name = sel.name;
     if (!name.length())
         name = sel.level_name;
-    
+
+#ifdef __EMSCRIPTEN__
+    // Web port: browser download instead of a native "save as" dialog --
+    // see web_download_file()'s own comment above.
+    web_download_file(sel.save_file.GetPath(), (name + ".sgaA").c_str());
+#else
     FileSpecifier dstFile;
     dstFile.SetToSavedGamesDir();
     dstFile += "unused.sgaA";
@@ -402,6 +525,7 @@ static void dialog_export(void *arg)
         if (error)
             alert_user(infoError, strERRORS, fileError, error);
     }
+#endif
 }
 
 
@@ -412,21 +536,43 @@ size_t saved_game_was_networked(FileSpecifier& saved_game)
     return (saved_game == last_saved_game) ? last_saved_networked : UNONE;
 }
 
+// Web port (see ../../WEB_PORT_PLAN.md, M4h): EXPORT and LOAD OTHER are
+// available under Emscripten too, just via browser download/upload
+// (web_download_file()/web_open_file_picker() above) instead of the native
+// OS file-picker dialogs (FileSpecifier::WriteDialog()/ReadDialog(),
+// FileHandler.cpp) those have no Emscripten implementation for -- see
+// dialog_export()'s and the LOAD_DIALOG_OTHER case's own Emscripten
+// branches below for where the two mechanisms actually diverge.
+#ifndef MAC_APP_STORE
+#define A1_QUICKSAVE_HAVE_EXPORT_AND_OTHER 1
+#endif
+
+#ifdef __EMSCRIPTEN__
+void load_quick_save_dialog(FileSpecifier& saved_game, std::function<void(bool)> on_result)
+{
+    // Web port: d is heap-allocated (see player_dialog() in
+    // preferences.cpp for the fuller explanation of this pattern) --
+    // outlives this function, which returns once the dialog is
+    // registered, well before the user actually makes a choice.
+    dialog *d_heap = new dialog();
+    dialog &d = *d_heap;
+#else
 bool load_quick_save_dialog(FileSpecifier& saved_game)
 {
+    dialog d;
+#endif
     QuickSaves::instance()->enumerate();
 
-    dialog d;
     vertical_placer *placer = new vertical_placer;
     w_title *w_header = new w_title("CONTINUE SAVED GAME");
     placer->dual_add(w_header, d);
     placer->add(new w_spacer, true);
-    
+
     horizontal_placer *mini_button_placer = new horizontal_placer;
     w_tiny_button *rename_w = new w_tiny_button("RENAME", dialog_rename, &d);
     rename_w->set_identifier(iDIALOG_RENAME_W);
     mini_button_placer->dual_add(rename_w, d);
-#ifndef MAC_APP_STORE
+#ifdef A1_QUICKSAVE_HAVE_EXPORT_AND_OTHER
     w_tiny_button *export_w = new w_tiny_button("EXPORT", dialog_export, &d);
     export_w->set_identifier(iDIALOG_EXPORT_W);
     mini_button_placer->dual_add(export_w, d);
@@ -434,7 +580,7 @@ bool load_quick_save_dialog(FileSpecifier& saved_game)
     w_tiny_button *delete_w = new w_tiny_button("DELETE", dialog_delete, &d);
     delete_w->set_identifier(iDIALOG_DELETE_W);
     mini_button_placer->dual_add(delete_w, d);
-    
+
     placer->add(mini_button_placer, true);
     placer->add(new w_spacer, true);
 
@@ -445,7 +591,7 @@ bool load_quick_save_dialog(FileSpecifier& saved_game)
     placer->add(new w_spacer, true);
 
     horizontal_placer* button_placer = new horizontal_placer;
-#ifndef MAC_APP_STORE
+#ifdef A1_QUICKSAVE_HAVE_EXPORT_AND_OTHER
     w_button* other_w = new w_button("LOAD OTHER", dialog_exit_other, &d);
     button_placer->dual_add(other_w, d);
 #endif
@@ -454,22 +600,64 @@ bool load_quick_save_dialog(FileSpecifier& saved_game)
     button_placer->dual_add(accept_w, d);
     w_button* cancel_w = new w_button("CANCEL", dialog_cancel, &d);
     button_placer->dual_add(cancel_w, d);
-    
+
     placer->add(button_placer, true);
-    
+
     d.set_widget_placer(placer);
     d.activate_widget(saves_w);
-    
+
     if (!saves_w->has_selection())
     {
         rename_w->set_enabled(false);
         delete_w->set_enabled(false);
-#ifndef MAC_APP_STORE
+#ifdef A1_QUICKSAVE_HAVE_EXPORT_AND_OTHER
         export_w->set_enabled(false);
 #endif
         accept_w->set_enabled(false);
     }
-    
+
+#ifdef __EMSCRIPTEN__
+    run_dialog_cooperatively(d_heap, [d_heap, &saved_game, saves_w, on_result](int result) {
+        QuickSaves::instance()->clear();
+        QuickSaveImageCache::instance()->clear();
+
+        if (result == LOAD_DIALOG_OTHER)
+        {
+            delete d_heap;
+            // Web port: browser upload instead of a native "open" dialog --
+            // see web_open_file_picker()'s own comment above. This dialog
+            // is already fully torn down (d_heap deleted) before the
+            // picker even opens, matching native's own ordering (the
+            // dialog closes, *then* the follow-up file dialog runs) --
+            // g_file_picker_callback fires later, asynchronously, once the
+            // user has actually picked a file (or cancelled).
+            last_saved_networked = UNONE;
+            g_file_picker_callback = [&saved_game, on_result](bool picked) {
+                bool ret = false;
+                if (picked)
+                {
+                    saved_game = FileSpecifier(kWebUploadPath);
+                    ret = true;
+                }
+                if (on_result) on_result(ret);
+            };
+            web_open_file_picker();
+            return;
+        }
+
+        bool ret = false;
+        if (result == 0)
+        {
+            QuickSave sel = saves_w->selected_save();
+            saved_game = sel.save_file;
+            last_saved_game = saved_game;
+            last_saved_networked = (sel.players > 1) ? 1 : 0;
+            ret = true;
+        }
+        delete d_heap;
+        if (on_result) on_result(ret);
+    });
+#else
     bool ret = false;
     QuickSave sel;
     switch (d.run()) {
@@ -487,10 +675,11 @@ bool load_quick_save_dialog(FileSpecifier& saved_game)
         default:
             break;
     }
-    
+
     QuickSaves::instance()->clear();
     QuickSaveImageCache::instance()->clear();
     return ret;
+#endif
 }
 
 extern SDL_Surface *draw_surface;

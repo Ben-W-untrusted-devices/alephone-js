@@ -118,10 +118,20 @@ bool get_default_theme_spec(FileSpecifier &file)
  *  Choose saved game for loading
  */
 
+#ifdef __EMSCRIPTEN__
+// Web port (see ../../WEB_PORT_PLAN.md, M4h): load_quick_save_dialog()'s
+// dialog blocks the whole tab under Emscripten -- this thin wrapper just
+// forwards to its cooperative version instead.
+void choose_saved_game_to_load(FileSpecifier &saved_game, std::function<void(bool)> on_result)
+{
+	load_quick_save_dialog(saved_game, std::move(on_result));
+}
+#else
 bool choose_saved_game_to_load(FileSpecifier &saved_game)
 {
 	return load_quick_save_dialog(saved_game);
 }
+#endif
 
 
 /*

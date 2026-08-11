@@ -1649,6 +1649,80 @@ here is implicit, not explicit permission to redistribute.
         reachable from the "Begin New Game" flow the user has been testing
         (level transitions and the ending are both further into actual
         gameplay), so lower priority than what's fixed here, but real.
+
+**Alpha 1.0 tagged** at this point (`95ee202a`): menus, Preferences (all
+sub-dialogs, nesting), alerts, and Begin New Game all confirmed working
+end-to-end in a real browser against real Marathon 2 data. User asked to
+proceed with Save/Load next, noting that Save (from the in-game menu)
+claims success but "Continue Saved Game" from the main menu hangs, so
+there was no way to verify it actually worked.
+
+- [x] **Save/Load, part 1 -- fixed the hang.** `QuickSave.cpp` had 3 more
+      `dialog::run()` sites (the main "Continue Saved Game" list, its
+      nested Rename dialog, its nested Delete-confirm dialog) -- same
+      proven pattern (`player_dialog()` in `preferences.cpp` has the
+      canonical writeup). The main list dialog's completion needed a real
+      callback (like `begin_game()`'s fix) rather than the simpler
+      fire-and-forget pattern used for Rename/Delete, since its caller
+      chain (`handle_load_game()` -> `choose_saved_game_to_load()` ->
+      `load_quick_save_dialog()`) needs to know *which* save was picked,
+      not just that the dialog closed -- `handle_load_game()`'s own
+      `FileToLoad` is now a heap-allocated `shared_ptr<FileSpecifier>`
+      rather than a plain local, for the same reason `begin_game()`'s
+      `starts[]`/`success` needed special handling: a plain stack local
+      referenced by a callback that can fire *after* this function has
+      already returned would dangle.
+  - Initially disabled the dialog's EXPORT and LOAD OTHER buttons
+    entirely, reasoning that they're built on native OS file-picker
+    dialogs (`FileSpecifier::WriteDialog()`/`ReadDialog()`,
+    `FileHandler.cpp`) with no Emscripten implementation. **The user
+    correctly pushed back on this** -- browsers have their own native
+    upload/download capability; what's actually missing is only the
+    *specific* native-dialog code path, not the underlying capability.
+    Asked the user to confirm scope (implement real browser upload/
+    download now vs. defer) rather than assume; they chose to implement
+    it now.
+  - [x] **Save/Load, part 2 -- real browser download/upload**, replacing
+        the native dialogs for exactly this "export/import a save to/from
+        the user's own device" case (not a general-purpose file-dialog
+        replacement -- FileHandler.cpp's own dialog::run() sites are still
+        unconverted and still unreachable from the web UI, since nothing
+        else calls into that code path from here):
+      - `web_download_file(fs_path, suggested_name)` (`EM_JS`, `QuickSave.cpp`):
+        reads the save's bytes from the Emscripten FS, wraps them in a
+        `Blob`, and clicks a hidden `<a download>` -- synchronous from
+        C++'s side (no waiting needed, unlike a native "choose a
+        location" dialog), so `dialog_export()` just calls it directly in
+        place of `WriteDialog()`.
+      - `web_open_file_picker()` (`EM_JS`) + `web_on_file_picked(int)`
+        (`extern "C" EMSCRIPTEN_KEEPALIVE`, the callback JS calls once the
+        user has actually picked a file): creates (once) a hidden
+        `<input type=file>`, and on `change`, reads the selected file via
+        `FileReader` and writes its bytes to a fixed path
+        (`/tmp/web_upload.sgaA`) in the Emscripten FS. This *is* genuinely
+        asynchronous (waiting on user interaction), so it uses the same
+        register-a-continuation shape as everything else this session: a
+        global `g_file_picker_callback` is set before triggering the
+        picker, and invoked by `web_on_file_picked()` once JS calls back
+        -- wired into the LOAD_DIALOG_OTHER case of the main dialog's own
+        completion callback (previously marked unreachable, now handled).
+      - Re-enabled the EXPORT/LOAD OTHER buttons for Emscripten (previously
+        excluded via `!defined(__EMSCRIPTEN__)`, now just `#ifndef MAC_APP_STORE`
+        like native) now that both have real implementations.
+      - Compiles and links clean (confirms `EMSCRIPTEN_KEEPALIVE` +
+        `EM_JS`-generated `Module._web_on_file_picked()` calls resolve
+        correctly, and that `Module.FS` is reachable from `EM_JS` code
+        given `web/build-engine.sh`'s existing `-sEXPORTED_RUNTIME_METHODS=FS,callMain`).
+        No regression in the Node harness. **Not yet tested in a real
+        browser** -- Node can't meaningfully exercise real DOM file
+        inputs/downloads at all, so this genuinely needs real-browser
+        confirmation, more than most fixes this session.
+  - [ ] **Not yet done: IDBFS persistence (M4b)** -- the actual "does a
+        save survive a page reload" question. Everything fixed so far
+        makes the *dialogs* work; where `SetToQuickSavesDir()` (and
+        preferences) resolve to is still plain MEMFS (in-memory,
+        wiped on reload) unless something mounts IDBFS there and syncs it
+        -- next up.
 - [ ] **M5 — Audio**
 - [ ] **M6 — Save games / prefs persistence**
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)
