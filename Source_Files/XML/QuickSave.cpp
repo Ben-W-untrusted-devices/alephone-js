@@ -148,7 +148,16 @@ void QuickSaveImageCache::clear() {
 
 class w_saves : public w_list_base {
 public:
-    w_saves(std::vector<QuickSave>& saves, int width, int numRows) : w_list_base(width, numRows, 0), m_saves(saves)
+    // Web port (see ../../WEB_PORT_PLAN.md, M4j): m_saves used to be a
+    // reference to the caller's local vector, which is fine when the
+    // caller (load_quick_save_dialog()) blocks in dialog::run() for the
+    // dialog's whole lifetime (native), but dangles once that function
+    // returns immediately and the dialog runs cooperatively instead
+    // (Emscripten) -- every later access (select/load/rename/delete) read
+    // freed stack memory, observed as an always-empty selected_save().
+    // Owning a copy is safe and behaviorally identical on both platforms,
+    // since nothing else reads the caller's vector after construction.
+    w_saves(std::vector<QuickSave> saves, int width, int numRows) : w_list_base(width, numRows, 0), m_saves(std::move(saves))
     {
         saved_min_height = item_height() * static_cast<uint16>(shown_items) + get_theme_space(LIST_WIDGET, T_SPACE) + get_theme_space(LIST_WIDGET, B_SPACE);
         trough_rect.h = saved_min_height - get_theme_space(LIST_WIDGET, TROUGH_T_SPACE) - get_theme_space(LIST_WIDGET, TROUGH_B_SPACE);
@@ -169,8 +178,12 @@ protected:
     void item_selected();
     
 private:
-    std::vector<QuickSave>& m_saves;
-    void draw_item(QuickSaves::iterator i, SDL_Surface* s, int16 x, int16 y, uint16 width, bool selected) const;
+    std::vector<QuickSave> m_saves;
+    // const_iterator, not QuickSaves::iterator: m_saves became an owned
+    // member (see the constructor's comment above), so a const method
+    // (draw_items() below) only has const access to it -- draw_item()
+    // never mutates through this iterator anyway.
+    void draw_item(std::vector<QuickSave>::const_iterator i, SDL_Surface* s, int16 x, int16 y, uint16 width, bool selected) const;
 };
 
 void w_saves::remove_selected()
@@ -215,7 +228,7 @@ void w_saves::click(int x, int y)
 
 void w_saves::draw_items(SDL_Surface* s) const
 {
-    QuickSaves::iterator i = m_saves.begin();
+    std::vector<QuickSave>::const_iterator i = m_saves.begin();
     int16 x = rect.x + get_theme_space(LIST_WIDGET, L_SPACE);
     int16 y = rect.y + get_theme_space(LIST_WIDGET, T_SPACE);
     uint16 width = rect.w - get_theme_space(LIST_WIDGET, L_SPACE) - get_theme_space(LIST_WIDGET, R_SPACE);
@@ -234,7 +247,7 @@ void w_saves::item_selected()
     get_owning_dialog()->quit(0);
 }
 
-void w_saves::draw_item(QuickSaves::iterator it, SDL_Surface* s, int16 x, int16 y, uint16 width, bool selected) const
+void w_saves::draw_item(std::vector<QuickSave>::const_iterator it, SDL_Surface* s, int16 x, int16 y, uint16 width, bool selected) const
 {
     std::ostringstream oss;
     oss << it->save_time;

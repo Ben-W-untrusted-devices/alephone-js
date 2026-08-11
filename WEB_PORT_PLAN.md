@@ -1797,45 +1797,51 @@ there was no way to verify it actually worked.
         Costs one extra click after choosing "Load Other", which is an
         acceptable tradeoff for correctness. **Not yet re-tested in a real
         browser.**
-  - [ ] **Loading a saved game doesn't actually resume play (M4j)** --
+  - [x] **Loading a saved game doesn't actually resume play (M4j)** --
         real-browser report: selecting a save from "Continue Saved Game"
         and clicking LOAD partially clears the screen (a black rectangle)
-        but never actually starts gameplay; a later action in the same
-        session hit `Aborted(Assertion failed: MapFile.IsOpen(), ...,
-        get_current_map_checksum)`, an uncaught wasm trap. Traced the
-        crash to `get_current_map_checksum()` (`Source_Files/Files/
-        game_wad.cpp`), called (via `set_map_file()` and directly from
-        `load_and_start_game()`) with whatever `MapFileSpec` currently is
-        -- if `open_wad_file_for_reading(MapFileSpec, MapFile)` fails, the
-        very next line unconditionally asserts, with no recovery path. Read
-        through `load_game_from_file()`/`use_map_file()`/`set_map_file()`
-        end to end (all pre-fork, untouched-by-us native code) without
-        being able to pin down *why* the open fails from static reading
-        alone -- `map_parent` is captured by value before `MapFileSpec`
-        gets temporarily repointed at the save file, so the obvious
-        "restore the wrong thing" theories don't hold up, and every
-        fallback branch (found_map true/false) ends up pointing
-        `MapFileSpec` at a file that's otherwise known-good (the same
-        scenario Map file "Begin New Game" already loads successfully, or
-        `set_to_default_map()`'s target). Rather than keep guessing without
-        a way to execute and observe this path (IDBFS and the file picker
-        are DOM/browser-only and can't run in the Node harness; a full
-        gameplay session needing real Marathon 2 data through Node hit
-        "No audio context available" SDL init failures before `main()`
-        gets far enough to matter, per earlier findings), added two
-        `#ifdef __EMSCRIPTEN__`-guarded `fprintf(stderr, ...)` diagnostics
-        (safe to remove once root-caused): one after `use_map_file()` in
-        `load_game_from_file()` logging `parent_checksum`/`found_map`, one
-        after `load_level_from_map(NONE)` logging its success, and one
-        right before the `assert(MapFile.IsOpen())` in
-        `get_current_map_checksum()` logging which path
-        (`MapFileSpec.GetPath()`) actually failed to open. **Needs a
-        real-browser retest**: save a game, immediately try to load it
-        (a single clean attempt, not several confused clicks/menu
-        round-trips first, since the exact click sequence in the first
-        report couldn't be fully disambiguated from the log alone), and
-        capture the `#log` panel output -- the new diagnostic lines will
-        say which branch ran and which file path failed to open.
+        but never actually starts gameplay, crashing on
+        `Aborted(Assertion failed: MapFile.IsOpen(), ...,
+        get_current_map_checksum)`. The diagnostics added on the first pass
+        (still in place; harmless, cheap) gave an unambiguous signal on
+        retest: `parent_checksum=0 found_map=0` and
+        `open_wad_file_for_reading FAILED for ''` -- an **empty path**,
+        meaning the `FileSpecifier` for the save the user had just clicked
+        was empty/default-constructed by the time `load_game_from_file()`
+        ran, not merely pointing at the wrong (but valid) file as the first
+        round of theories assumed.
+      - Root cause: `w_saves` (`Source_Files/XML/QuickSave.cpp`), the list
+        widget for the "Continue Saved Game" dialog, stored its save list
+        as `std::vector<QuickSave>& m_saves` -- a **reference** to
+        `load_quick_save_dialog()`'s local `saves` vector. Native's
+        blocking `dialog::run()` keeps that local alive for the dialog's
+        entire lifetime, so the reference was always safe there. But
+        `load_quick_save_dialog()` returns immediately once the dialog is
+        registered under the cooperative Emscripten path (same shape as
+        every other bug this session) -- `saves` is destroyed on return,
+        and `m_saves` dangles from that point on. Every subsequent access
+        (rendering the list, `selected_save()`, `RENAME`/`DELETE`) read
+        freed stack memory; `selected_save()` returning a
+        zeroed/garbage `QuickSave` (hence the empty `FileSpecifier`)
+        explains the exact symptom, and likely also the "black rectangle"
+        (the list itself was probably rendering from the same freed
+        memory).
+      - Fix: changed `w_saves` to *own* its data (`std::vector<QuickSave>
+        m_saves`, constructed by value + `std::move`) instead of
+        referencing the caller's local -- safe and behaviorally identical
+        on both platforms, since nothing in `load_quick_save_dialog()`
+        reads its local `saves` vector again after constructing `w_saves`
+        from it. This also required changing `draw_item()`/`draw_items()`
+        (both `const` methods) from `QuickSaves::iterator` to
+        `std::vector<QuickSave>::const_iterator`, since a `const` method
+        only has const access to an owned member (unlike a reference
+        member, where constness doesn't propagate) -- purely a type fix,
+        `draw_item()` was already read-only.
+      - Compiles clean. **Not yet re-tested in a real browser** -- next
+        retest should confirm both that LOAD now actually resumes
+        gameplay, and that RENAME/DELETE (which went through the same
+        dangling `m_saves`) work correctly too, since they were likely
+        silently broken the same way.
 - [ ] **M5 — Audio**
 - [ ] **M6 — Save games / prefs persistence**
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)
