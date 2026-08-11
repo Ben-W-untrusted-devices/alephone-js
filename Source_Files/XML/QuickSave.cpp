@@ -330,6 +330,21 @@ EM_JS(void, web_download_file, (const char* fs_path, const char* suggested_name)
 // file (or cancelled/failed) from the hidden <input type=file> this
 // creates on first use; the file's bytes are already written to
 // kWebUploadPath by then.
+//
+// Web port: this does NOT call input.click() directly. By the time this
+// EM_JS call runs, we're already one SDL event-pump tick removed from the
+// real DOM click that hit the dialog's "LOAD OTHER" button -- SDL's
+// Emscripten backend queues the browser's mouse event, and dialog widget
+// callbacks (this one included) only run when that queue is drained on the
+// *next* requestAnimationFrame tick (see shell.cpp/sdl_dialogs.cpp's
+// cooperative dialog machinery). Some browsers only allow input.click() to
+// open the native file picker when called synchronously within the
+// original trusted gesture's call stack, not merely "soon after" it (the
+// same class of restriction behind the "Pointer lock requires a user
+// gesture" rejection seen elsewhere) -- calling it here silently did
+// nothing. Instead, arm on the *next* real pointerdown anywhere on the
+// page, which is a genuine, synchronous, trusted gesture regardless of
+// browser. See WEB_PORT_PLAN.md, M4j.
 EM_JS(void, web_open_file_picker, (), {
     if (!Module.__a1FileInput) {
         var input = document.createElement("input");
@@ -361,7 +376,23 @@ EM_JS(void, web_open_file_picker, (), {
         });
         Module.__a1FileInput = input;
     }
-    Module.__a1FileInput.click();
+    if (!Module.__a1FilePickerPrompt) {
+        var prompt = document.createElement("div");
+        prompt.textContent = "Click anywhere to choose a save file to load...";
+        prompt.style.cssText = "position:fixed;top:1rem;left:50%;transform:translateX(-50%);"
+            + "background:#222;color:#fff;padding:0.75rem 1.5rem;border-radius:6px;"
+            + "z-index:2147483647;font:14px system-ui,sans-serif;cursor:pointer;"
+            + "display:none;";
+        document.body.appendChild(prompt);
+        document.addEventListener("pointerdown", function() {
+            if (prompt.style.display !== "none") {
+                prompt.style.display = "none";
+                Module.__a1FileInput.click();
+            }
+        }, true);
+        Module.__a1FilePickerPrompt = prompt;
+    }
+    Module.__a1FilePickerPrompt.style.display = "block";
 });
 
 static const char* kWebUploadPath = "/tmp/web_upload.sgaA";

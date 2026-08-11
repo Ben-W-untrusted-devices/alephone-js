@@ -1773,6 +1773,69 @@ there was no way to verify it actually worked.
         built to hunt). Needs: start the engine, save a game (or change a
         preference), reload the page, confirm the save/preference is still
         there.
+  - [x] **"Load Other" file picker not opening (M4j)** -- real-browser
+        report: IDBFS persistence (above) worked (save/reload survived),
+        but clicking "LOAD OTHER" in the "Continue Saved Game" dialog just
+        closed the popup instead of showing a file picker. Root cause: the
+        same class of bug as the already-known "Pointer lock requires a
+        user gesture" rejection -- `web_open_file_picker()`'s
+        `input.click()` ran one SDL event-pump tick removed from the real
+        DOM click (SDL's Emscripten backend queues the browser event; the
+        dialog's widget callback -- and thus this EM_JS call -- only runs
+        when that queue drains on the *next* `requestAnimationFrame` tick),
+        and at least the user's browser requires `.click()` on a file
+        input to happen synchronously within the original trusted gesture,
+        not just "soon after" it. Fixed in `Source_Files/XML/QuickSave.cpp`
+        by no longer calling `.click()` from `web_open_file_picker()`
+        directly -- it now shows a small fixed-position banner ("Click
+        anywhere to choose a save file to load...") and arms a one-time
+        `document`-level `pointerdown` (capture phase) listener that calls
+        `.click()` from *that* handler instead, which is a genuine
+        synchronous trusted gesture in any browser. Both the input and the
+        banner are created lazily and cached on `Module`, self-contained
+        within the existing EM_JS block (no `game.html` changes needed).
+        Costs one extra click after choosing "Load Other", which is an
+        acceptable tradeoff for correctness. **Not yet re-tested in a real
+        browser.**
+  - [ ] **Loading a saved game doesn't actually resume play (M4j)** --
+        real-browser report: selecting a save from "Continue Saved Game"
+        and clicking LOAD partially clears the screen (a black rectangle)
+        but never actually starts gameplay; a later action in the same
+        session hit `Aborted(Assertion failed: MapFile.IsOpen(), ...,
+        get_current_map_checksum)`, an uncaught wasm trap. Traced the
+        crash to `get_current_map_checksum()` (`Source_Files/Files/
+        game_wad.cpp`), called (via `set_map_file()` and directly from
+        `load_and_start_game()`) with whatever `MapFileSpec` currently is
+        -- if `open_wad_file_for_reading(MapFileSpec, MapFile)` fails, the
+        very next line unconditionally asserts, with no recovery path. Read
+        through `load_game_from_file()`/`use_map_file()`/`set_map_file()`
+        end to end (all pre-fork, untouched-by-us native code) without
+        being able to pin down *why* the open fails from static reading
+        alone -- `map_parent` is captured by value before `MapFileSpec`
+        gets temporarily repointed at the save file, so the obvious
+        "restore the wrong thing" theories don't hold up, and every
+        fallback branch (found_map true/false) ends up pointing
+        `MapFileSpec` at a file that's otherwise known-good (the same
+        scenario Map file "Begin New Game" already loads successfully, or
+        `set_to_default_map()`'s target). Rather than keep guessing without
+        a way to execute and observe this path (IDBFS and the file picker
+        are DOM/browser-only and can't run in the Node harness; a full
+        gameplay session needing real Marathon 2 data through Node hit
+        "No audio context available" SDL init failures before `main()`
+        gets far enough to matter, per earlier findings), added two
+        `#ifdef __EMSCRIPTEN__`-guarded `fprintf(stderr, ...)` diagnostics
+        (safe to remove once root-caused): one after `use_map_file()` in
+        `load_game_from_file()` logging `parent_checksum`/`found_map`, one
+        after `load_level_from_map(NONE)` logging its success, and one
+        right before the `assert(MapFile.IsOpen())` in
+        `get_current_map_checksum()` logging which path
+        (`MapFileSpec.GetPath()`) actually failed to open. **Needs a
+        real-browser retest**: save a game, immediately try to load it
+        (a single clean attempt, not several confused clicks/menu
+        round-trips first, since the exact click sequence in the first
+        report couldn't be fully disambiguated from the log alone), and
+        capture the `#log` panel output -- the new diagnostic lines will
+        say which branch ran and which file path failed to open.
 - [ ] **M5 — Audio**
 - [ ] **M6 — Save games / prefs persistence**
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)
