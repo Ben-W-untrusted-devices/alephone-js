@@ -448,11 +448,33 @@ static void crosshair_dialog(void *arg)
 	table_placer *table = new table_placer(2, get_theme_space(ITEM_WIDGET));
 	table->col_flags(0, placeable::kAlignRight);
 
+	// Web port (see ../../WEB_PORT_PLAN.md, M5): every SelectorWidget/Pref
+	// pair below used to be a pair of plain stack locals, registered by
+	// address into crosshair_binders (a file-scope global that outlives
+	// this function). Safe under native, where d.run() blocks for the
+	// dialog's entire lifetime, but crosshair_binders's per-frame
+	// processing_function (update_crosshair_display, set below)
+	// dereferences them on every subsequent frame under Emscripten's
+	// cooperative dialogs, which return immediately -- this function's
+	// stack frame (and these objects with it) was long gone by the time
+	// that ran. Confirmed via a real-browser crash: "RuntimeError: Out of
+	// bounds call_indirect", a virtual call through a dangling, reused
+	// stack address. Heap-allocated instead and owned by this vector,
+	// which the completion callback below keeps alive for exactly as long
+	// as the dialog itself (Emscripten) or which simply outlives d.run()
+	// as an ordinary local (native) -- same fix, different owner. shared_ptr,
+	// not unique_ptr, because the completion callback below is stored in a
+	// std::function, which requires its captures to be copy-constructible.
+	auto crosshair_widget_binders = std::make_shared<std::vector<std::unique_ptr<Bindable<int>>>>();
+	auto bind_crosshair_widget = [&](Bindable<int>* widget, Bindable<int>* pref) {
+		crosshair_widget_binders->emplace_back(widget);
+		crosshair_widget_binders->emplace_back(pref);
+		crosshair_binders->insert<int>(widget, pref);
+	};
+
 	// Shape
 	w_select *shape_w = new w_select(0, shape_labels);
-	SelectSelectorWidget shapeWidget(shape_w);
-	Int16Pref shapePref(player_preferences->Crosshairs.Shape);
-	crosshair_binders->insert<int> (&shapeWidget, &shapePref);
+	bind_crosshair_widget(new SelectSelectorWidget(shape_w), new Int16Pref(player_preferences->Crosshairs.Shape));
 	table->dual_add(shape_w->label("Shape"), d);
 	table->dual_add(shape_w, d);
 
@@ -460,25 +482,19 @@ static void crosshair_dialog(void *arg)
 
 	// Thickness
 	w_slider* thickness_w = new w_crosshair_slider(7, 0);
-	SliderSelectorWidget thicknessWidget(thickness_w);
-	CrosshairPref thicknessPref(player_preferences->Crosshairs.Thickness);
-	crosshair_binders->insert<int> (&thicknessWidget, &thicknessPref);
+	bind_crosshair_widget(new SliderSelectorWidget(thickness_w), new CrosshairPref(player_preferences->Crosshairs.Thickness));
 	table->dual_add(thickness_w->label("Width"), d);
 	table->dual_add(thickness_w, d);
 
 	// From Center
 	w_slider *from_center_w = new w_slider(15, 0);
-	SliderSelectorWidget fromCenterWidget(from_center_w);
-	Int16Pref fromCenterPref(player_preferences->Crosshairs.FromCenter);
-	crosshair_binders->insert<int> (&fromCenterWidget, &fromCenterPref);
+	bind_crosshair_widget(new SliderSelectorWidget(from_center_w), new Int16Pref(player_preferences->Crosshairs.FromCenter));
 	table->dual_add(from_center_w->label("Gap"), d);
 	table->dual_add(from_center_w, d);
 
 	// Length
 	w_slider *length_w = new w_crosshair_slider(15, 0);
-	SliderSelectorWidget lengthWidget(length_w);
-	CrosshairPref lengthPref(player_preferences->Crosshairs.Length);
-	crosshair_binders->insert<int> (&lengthWidget, &lengthPref);
+	bind_crosshair_widget(new SliderSelectorWidget(length_w), new CrosshairPref(player_preferences->Crosshairs.Length));
 	table->dual_add(length_w->label("Size"), d);
 	table->dual_add(length_w, d);
 
@@ -487,23 +503,17 @@ static void crosshair_dialog(void *arg)
 
 	// Color
 	w_slider *red_w = new w_percentage_slider(16, 0);
-	SliderSelectorWidget redWidget(red_w);
-	ColorComponentPref redPref(player_preferences->Crosshairs.Color.red);
-	crosshair_binders->insert<int> (&redWidget, &redPref);
+	bind_crosshair_widget(new SliderSelectorWidget(red_w), new ColorComponentPref(player_preferences->Crosshairs.Color.red));
 	table->dual_add(red_w->label("Red"), d);
 	table->dual_add(red_w, d);
 
 	w_slider *green_w = new w_percentage_slider(16, 0);
-	SliderSelectorWidget greenWidget(green_w);
-	ColorComponentPref greenPref(player_preferences->Crosshairs.Color.green);
-	crosshair_binders->insert<int> (&greenWidget, &greenPref);
+	bind_crosshair_widget(new SliderSelectorWidget(green_w), new ColorComponentPref(player_preferences->Crosshairs.Color.green));
 	table->dual_add(green_w->label("Green"), d);
 	table->dual_add(green_w, d);
 
 	w_slider *blue_w = new w_percentage_slider(16, 0);
-	SliderSelectorWidget blueWidget(blue_w);
-	ColorComponentPref bluePref(player_preferences->Crosshairs.Color.blue);
-	crosshair_binders->insert<int> (&blueWidget, &bluePref);
+	bind_crosshair_widget(new SliderSelectorWidget(blue_w), new ColorComponentPref(player_preferences->Crosshairs.Color.blue));
 	table->dual_add(blue_w->label("Blue"), d);
 	table->dual_add(blue_w, d);
 
@@ -511,9 +521,7 @@ static void crosshair_dialog(void *arg)
 	table->dual_add_row(new w_static_text("OpenGL Only (no preview)"), d);
 
 	w_slider *opacity_w = new w_percentage_slider(16, 0);
-	SliderSelectorWidget opacityWidget(opacity_w);
-	OpacityPref opacityPref(player_preferences->Crosshairs.Opacity);
-	crosshair_binders->insert<int> (&opacityWidget, &opacityPref);
+	bind_crosshair_widget(new SliderSelectorWidget(opacity_w), new OpacityPref(player_preferences->Crosshairs.Opacity));
 	table->dual_add(opacity_w->label("Opacity"), d);
 	table->dual_add(opacity_w, d);
 
@@ -535,7 +543,11 @@ static void crosshair_dialog(void *arg)
 	clear_screen();
 
 #ifdef __EMSCRIPTEN__
-	run_dialog_cooperatively(d_heap, [d_heap, OldCrosshairs](int result) {
+	// crosshair_widget_binders captured by (shared_ptr) value -- keeps the
+	// heap objects created above alive for exactly as long as this
+	// callback itself (i.e. the dialog's whole lifetime), and lets them be
+	// freed automatically once it fires and is destroyed.
+	run_dialog_cooperatively(d_heap, [d_heap, OldCrosshairs, crosshair_widget_binders](int result) {
 		if (result == 0) // Accepted
 #else
 	if (d.run() == 0) // Accepted

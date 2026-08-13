@@ -2386,8 +2386,45 @@ there was no way to verify it actually worked.
         `crosshair_dialog()`'s own completion handling), which read very
         differently by the numbers even though both look identical
         ("nothing happens") from the outside.
-      - Compiles clean. **Not yet re-tested in a real browser.**
-- [x] **M6 — Save games / prefs persistence** -- superseded by M4i (IDBFS
+      - Compiles clean.
+  - [x] **Ninth round: Crosshair crash root-caused and fixed. Music-stop
+        theory disproven by new evidence. Lockup diagnostics didn't fire
+        (M5).**
+      - **Crosshair fixed.** Log pinpointed it exactly: clicking
+        "CROSSHAIR SETTINGS" itself crashes immediately (`RuntimeError:
+        Out of bounds call_indirect`), before the dialog ever opens --
+        Accept/Cancel were never the problem. Root cause:
+        `crosshair_dialog()` (`preferences.cpp`) registered ~8 pairs of
+        `SelectorWidget`/`Pref` binder objects into the file-scope global
+        `crosshair_binders` by address, but they were plain stack locals
+        -- safe under native (`d.run()` blocks for the dialog's whole
+        life), dangling under Emscripten (the function returns
+        immediately; `crosshair_binders`'s per-frame
+        `processing_function` then calls a virtual method through a
+        freed stack address on the next frame -- exactly what
+        `call_indirect` out-of-bounds means). Heap-allocated them into a
+        `shared_ptr<vector<unique_ptr<Bindable<int>>>>` and had the
+        completion callback capture it, keeping them alive for the
+        dialog's real lifetime (native unaffected, same behavior either
+        way). Compiles clean.
+      - **Music-stop theory disproven, not yet replaced.** New log:
+        `SoundManager::SetStatus()`/`Init()`'s reinit path fires exactly
+        once at startup -- confirms the C++ side is not the cause. User
+        also reports this is Safari-only (not Chrome), and that being in
+        Preferences on Safari blocks system copy/paste outside the
+        canvas too, resetting on exit -- points at some Safari-specific
+        interaction between the page and the dialog (not a games-logic
+        bug), still unidentified. The new persistent `statechange`
+        listener from the previous round should catch it directly next
+        time.
+      - **Lockup: none of the new markers fired.** User reports it locks
+        immediately on a `mousedown` in the main menu, before
+        `load_and_start_game()`/`start_game()`/`begin_game()`. Added
+        matching markers to `begin_game()` (used by "Begin New Game",
+        not `load_and_start_game()` -- an entry point that had no
+        markers at all before now) and its `continue_starting_game`
+        lambda. Compiles clean. **Still no confirmed repro data for this
+        one.**
       persistence) above, done as part of the save/load milestone rather
       than as a separate later pass.
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)

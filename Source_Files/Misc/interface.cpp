@@ -2503,6 +2503,13 @@ static bool begin_game(
 	short user,
 	bool cheat)
 {
+#ifdef __EMSCRIPTEN__
+	// Web port diagnostic (see ../../WEB_PORT_PLAN.md, M5): real-browser
+	// reports of the tab locking up immediately on the very click that
+	// triggers "Begin New Game" -- this is that entry point. Safe to
+	// remove once root-caused.
+	fprintf(stderr, "[begin_game] enter, user=%d cheat=%d\n", user, cheat);
+#endif
 	struct entry_point entry;
 	struct player_start_data starts[MAXIMUM_NUMBER_OF_PLAYERS];
 	struct game_data game_information;
@@ -2685,6 +2692,9 @@ static bool begin_game(
                         memset(entry.level_name,0,66);
 
                         construct_single_player_start(starts, &number_of_players);
+#ifdef __EMSCRIPTEN__
+			fprintf(stderr, "[begin_game] construct_single_player_start() done\n");
+#endif
 
 			game_information.game_time_remaining= INT32_MAX;
 			game_information.kill_limit = 0;
@@ -2774,13 +2784,27 @@ static bool begin_game(
 		// once the lambda is known to have already run.
 		auto success_out = std::make_shared<bool>(false);
 		auto continue_starting_game = [=, starts_copy = std::vector<player_start_data>(starts, starts + MAXIMUM_NUMBER_OF_PLAYERS)]() mutable {
+#ifdef __EMSCRIPTEN__
+			// Web port diagnostic (see ../../WEB_PORT_PLAN.md, M5): "Begin
+			// New Game" reported as locking up the tab too, and doesn't go
+			// through load_and_start_game() at all -- this is the other
+			// entry point into the shared start_game(), so needs its own
+			// markers. Safe to remove once root-caused.
+			fprintf(stderr, "[continue_starting_game] enter\n");
+#endif
 			Plugins::instance()->set_mode(number_of_players > 1 ? Plugins::kMode_Net : Plugins::kMode_Solo);
 			Crosshairs_SetActive(player_preferences->crosshairs_active);
 			LoadHUDLua();
 			RunLuaHUDScript();
+#ifdef __EMSCRIPTEN__
+			fprintf(stderr, "[continue_starting_game] about to call new_game()/make_restored_game_relevant()\n");
+#endif
 
 			bool started = is_saved_game_replay() ? make_restored_game_relevant(false, starts_copy.data(), number_of_players) :
 				new_game(number_of_players, is_networked, &game_information, starts_copy.data(), &entry);
+#ifdef __EMSCRIPTEN__
+			fprintf(stderr, "[continue_starting_game] new_game()/make_restored_game_relevant() done, started=%d\n", started);
+#endif
 
 			if(started)
 			{
@@ -2789,13 +2813,22 @@ static bool begin_game(
 				clean_up_after_failed_game(user == _network_player, record_game, clean_up_on_failure);
 			}
 			*success_out = started;
+#ifdef __EMSCRIPTEN__
+			fprintf(stderr, "[continue_starting_game] exit\n");
+#endif
 		};
 
 		/* Try to display the first chapter screen.. */
 		if (user != _network_player && user != _demo && !is_saved_game_replay())
 		{
+#ifdef __EMSCRIPTEN__
+			fprintf(stderr, "[begin_game] about to FindLevelMovie()/show_movie()\n");
+#endif
 			FindLevelMovie(entry.level_number);
 			show_movie(entry.level_number);
+#ifdef __EMSCRIPTEN__
+			fprintf(stderr, "[begin_game] show_movie() done, about to try_and_display_chapter_screen()\n");
+#endif
 			try_and_display_chapter_screen(entry.level_number, false, false, continue_starting_game);
 		}
 		else
