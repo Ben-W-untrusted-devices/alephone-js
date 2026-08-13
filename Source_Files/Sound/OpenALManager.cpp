@@ -49,17 +49,38 @@ EM_JS(void, web_log_audio_context_state, (), {
         }
         var ctx = AL.currentCtx.audioCtx;
         Module.printErr('[audio] AudioContext state: ' + ctx.state + ' (sampleRate=' + ctx.sampleRate + ')');
-        if (ctx.state === 'suspended') {
-            var resumeOnce = function() {
+        var resumeOnce = function() {
+            if (ctx.state === 'suspended') {
                 ctx.resume().then(function() {
                     Module.printErr('[audio] AudioContext resumed, state now: ' + ctx.state);
                 }).catch(function(e) {
                     Module.printErr('[audio] AudioContext resume() rejected: ' + e);
                 });
-            };
+            }
+        };
+        if (ctx.state === 'suspended') {
             for (var type of ['mousedown', 'keydown', 'touchstart']) {
                 document.addEventListener(type, resumeOnce, { once: true });
             }
+        }
+        // Web port diagnostic (see ../../WEB_PORT_PLAN.md, M5): the
+        // one-shot check/log above only sees the state at the moment this
+        // runs (right after device/context creation) -- real-browser
+        // reports of music silently dying mid-session (specifically right
+        // when a dialog like Preferences or Continue Saved Game opens),
+        // with no corresponding OpenALManager::Init()/SoundManager::SetStatus()
+        // reinit log, rule out the device/context being recreated on the
+        // C++ side. If the *browser* is independently suspending this same
+        // AudioContext later for some reason, this is the only way to see
+        // it: attach a real 'statechange' listener (not one-shot) that
+        // logs every future transition, and try to resume again whenever
+        // it goes back to suspended.
+        if (!ctx.__a1StatechangeLogged) {
+            ctx.__a1StatechangeLogged = true;
+            ctx.addEventListener('statechange', function() {
+                Module.printErr('[audio] AudioContext statechange -> ' + ctx.state);
+                resumeOnce();
+            });
         }
     } catch (e) {
         Module.printErr('[audio] web_log_audio_context_state failed: ' + e);

@@ -2314,6 +2314,78 @@ there was no way to verify it actually worked.
         crash and music-stop issues are settled, ideally with a report of
         whether clicking Accept/Cancel does *anything* visible (button
         press animation, etc.) or is completely inert.
+      - Compiles clean.
+  - [ ] **Eighth real-browser retest: user confirmed Crosshair Accept/
+        Cancel are "completely inert" (not just non-closing), and
+        supplied a real-browser log + screenshot for the lockup (M5).**
+        The "Continue Saved Game" dialog itself renders perfectly now
+        (screenshot shows real save entries, correctly laid out, no
+        double-draw) -- confirms the `top_dialog == this` fix from the
+        previous round holds. The lockup log is the important new data
+        point: it just **stops**, mid-sequence, right after a `mousedown`
+        on the LOAD button -- no `RuntimeError`, no further heartbeats,
+        nothing, not even in the browser's own JS console per the user's
+        report. That's a materially different signature from the earlier
+        "Out of bounds memory access" trap (which *did* print and let
+        heartbeats resume afterward): a trap unwinds and hands control
+        back to the browser event loop, but this doesn't -- pointing at a
+        genuine synchronous stall (a very long-running or infinite
+        stretch of C++ code with no yield point) rather than a crash.
+        `load_and_start_game()`/`start_game()` (`interface.cpp`) run
+        entirely synchronously, triggered directly from the LOAD button's
+        `mouse_up()`, and are shared by both "Begin New Game" and
+        "Continue Saved Game" (matching that both are reported broken).
+        One real hypothesis worth naming: entering a level for the first
+        time likely triggers a *burst* of ambient/level sound sources
+        initializing essentially at once -- before this session's audio
+        fixes, every one of those `AssignSource()` attempts failed near-
+        instantly (poisoned error state), so any such burst was
+        inherently fast; now that initialization actually succeeds and
+        does real work (creating real Web Audio nodes, decoding data),
+        a large enough burst could plausibly take long enough to look
+        exactly like a full lockup. Not confirmed -- added coarse
+        progress markers through the actual shared code path instead of
+        guessing further: after `get_flat_data()`, after constructing
+        player starts, after `make_restored_game_relevant()`, immediately
+        before/after `start_game()` in `load_and_start_game()`; and at
+        entry, after `enter_screen()`, after `L_Call_HUDInit()`, after
+        `draw_interface()`, before/after `SoundManager::instance()->UpdateListener()`,
+        and at exit inside `start_game()` itself. Whichever of these is
+        the *last* line printed before the next lockup pinpoints the
+        stalling step directly.
+      - Also extended the earlier one-shot `web_log_audio_context_state()`
+        (see the Third/Seventh retest entries above) with a persistent
+        `AudioContext` `'statechange'` event listener (not one-shot),
+        logging and attempting to re-`resume()` on *every* future
+        transition, not just the first. This directly targets the music-
+        stop mystery: the newest log shows `SoundManager::SetStatus()`
+        and `OpenALManager::Init()`'s reinit path being called exactly
+        **once**, at startup, with no second call when Preferences opens
+        -- while `[audio tick] queue_size=1` keeps printing steadily
+        throughout, meaning `OpenALManager::Tick()`/`ProcessAudioQueue()`
+        never stopped running and the queue never emptied. That rules
+        out the leading hypothesis from the previous round (the C++ side
+        recreating the device/context) outright: the engine-side state
+        looks completely healthy the whole time. The only remaining
+        explanation compatible with "OpenAL keeps ticking normally but no
+        sound is heard" is that the browser is independently suspending
+        the same `AudioContext` again on its own, invisibly to a one-shot
+        check -- which the new persistent listener will catch directly on
+        the next retest, wherever/whenever it happens.
+      - Added one more diagnostic for the Crosshair issue given "completely
+        inert" is new information but investigation found no new lead by
+        reading (checked `w_crosshair_display`'s constructor and the
+        per-frame `processing_function`, `BinderSet::migrate_all_first_to_second()`
+        -- confirmed intentional live-preview sync, not obviously
+        related): `w_button_base::mouse_up()` now logs every button's
+        text, click coordinates, its own rect, and whether the click
+        counted as a hit -- distinguishes "click isn't even registering
+        as landing on the button" (a hit-test/layout problem specific to
+        this dialog) from "click registers but `proc()` doesn't have the
+        expected effect" (a problem in `dialog_ok`/`dialog_cancel` or
+        `crosshair_dialog()`'s own completion handling), which read very
+        differently by the numbers even though both look identical
+        ("nothing happens") from the outside.
       - Compiles clean. **Not yet re-tested in a real browser.**
 - [x] **M6 — Save games / prefs persistence** -- superseded by M4i (IDBFS
       persistence) above, done as part of the save/load milestone rather

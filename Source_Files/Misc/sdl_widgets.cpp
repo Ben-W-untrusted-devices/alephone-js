@@ -400,7 +400,22 @@ void w_button_base::mouse_up(int x, int y)
 	bool debounced = (now - last_activation_tick) < (MACHINE_TICKS_PER_SECOND / 5);
 	last_activation_tick = now;
 
-	if (proc && !debounced && x >= 0 && x <= rect.w && y >= 0 && y <= rect.h)
+	bool hit = x >= 0 && x <= rect.w && y >= 0 && y <= rect.h;
+#ifdef __EMSCRIPTEN__
+	// Web port diagnostic (see ../../WEB_PORT_PLAN.md, M5): Crosshair
+	// Settings' Accept/Cancel reported as completely inert, with no new
+	// lead after ruling out the shared-dialog_surface bug and the
+	// per-frame processing_function (BinderSet::migrate_all_first_to_second(),
+	// intentional live-preview sync, not obviously related). This confirms
+	// whether the click is even registering as a hit on the button at all
+	// (a hit-test/layout problem) versus registering but proc() not having
+	// the expected effect (a problem in the button's own action). Safe to
+	// remove once root-caused.
+	fprintf(stderr, "[w_button_base::mouse_up] \"%s\" x=%d y=%d rect=%dx%d hit=%d debounced=%d has_proc=%d\n",
+		text.c_str(), x, y, rect.w, rect.h, hit, debounced, proc != nullptr);
+#endif
+
+	if (proc && !debounced && hit)
 		proc(arg);
 }
 

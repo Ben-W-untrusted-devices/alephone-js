@@ -838,10 +838,24 @@ bool load_and_start_game(FileSpecifier& File)
 
 	if (success)
 	{
+#ifdef __EMSCRIPTEN__
+		// Web port diagnostic (see ../../WEB_PORT_PLAN.md, M5): real-browser
+		// reports of the tab appearing to fully lock up (no further console
+		// output at all, including the page's own heartbeat timer -- i.e. a
+		// genuine synchronous stall, not a caught error) when starting a new
+		// game or loading a save. This whole block runs synchronously in one
+		// call, triggered directly from the LOAD button's click -- these
+		// markers bisect how far it actually gets before stalling. Safe to
+		// remove once root-caused.
+		fprintf(stderr, "[load_and_start_game] got flat data, about to get_flat_data()\n");
+#endif
 		game_state.user = userWantsMultiplayer ? _network_player : _single_player;
 		auto theSavedGameFlatData = std::unique_ptr<byte, decltype(&free)>((byte*)get_flat_data(File, false /* union wad? */, 0 /* level # */), free);
 		int theSavedGameFlatDataLength = theSavedGameFlatData ? get_flat_data_length(theSavedGameFlatData.get()) : 0;
 		success = theSavedGameFlatDataLength > 0;
+#ifdef __EMSCRIPTEN__
+		fprintf(stderr, "[load_and_start_game] get_flat_data() done, length=%d\n", theSavedGameFlatDataLength);
+#endif
 
 #if !defined(DISABLE_NETWORKING)
 		if (userWantsMultiplayer)
@@ -891,6 +905,9 @@ bool load_and_start_game(FileSpecifier& File)
 			}
 
 			match_starts_with_existing_players(theStarts, &theNumberOfStarts);
+#ifdef __EMSCRIPTEN__
+			fprintf(stderr, "[load_and_start_game] starts constructed, count=%d\n", theNumberOfStarts);
+#endif
 
 #if !defined(DISABLE_NETWORKING)
 			if (userWantsMultiplayer)
@@ -911,6 +928,9 @@ bool load_and_start_game(FileSpecifier& File)
 			if (success)
 			{
 				success = make_restored_game_relevant(userWantsMultiplayer, theStarts, theNumberOfStarts);
+#ifdef __EMSCRIPTEN__
+				fprintf(stderr, "[load_and_start_game] make_restored_game_relevant() done, success=%d\n", success);
+#endif
 
 				if (success)
 				{
@@ -920,8 +940,14 @@ bool load_and_start_game(FileSpecifier& File)
 					std::vector<byte> saved_wad_data(theSavedGameFlatData.get(), theSavedGameFlatData.get() + theSavedGameFlatDataLength);
 					set_recording_saved_wad_data(saved_wad_data);
 					start_recording();
-					
+
+#ifdef __EMSCRIPTEN__
+					fprintf(stderr, "[load_and_start_game] about to call start_game()\n");
+#endif
 					start_game(game_state.user, false);
+#ifdef __EMSCRIPTEN__
+					fprintf(stderr, "[load_and_start_game] start_game() returned\n");
+#endif
 				}
 			}
 		}
@@ -2801,16 +2827,30 @@ static void start_game(
 	short user,
 	bool changing_level)
 {
+#ifdef __EMSCRIPTEN__
+	// Web port diagnostic (see ../../WEB_PORT_PLAN.md, M5; load_and_start_game()
+	// has the fuller explanation): start_game() is shared by both "Begin
+	// New Game" and "Continue Saved Game", both reported as fully locking
+	// up the tab -- bisects which of its steps is the last to actually
+	// run. Safe to remove once root-caused.
+	fprintf(stderr, "[start_game] enter, user=%d changing_level=%d\n", user, changing_level);
+#endif
 	/* Change our menus.. */
 	toggle_menus(true);
-	
+
 	// LP change: reset screen so that extravision will not be persistent
 	reset_screen();
-	
+
 	enter_screen();
+#ifdef __EMSCRIPTEN__
+	fprintf(stderr, "[start_game] enter_screen() done\n");
+#endif
 	if (!changing_level)
 		L_Call_HUDInit();
-	
+#ifdef __EMSCRIPTEN__
+	fprintf(stderr, "[start_game] L_Call_HUDInit() done\n");
+#endif
+
 	// LP: this is in case we are starting underneath a liquid
 	if (!OGL_IsActive() || !(TEST_FLAG(Get_OGL_ConfigureData().Flags,OGL_Flag_Fader)))
 	{
@@ -2818,12 +2858,15 @@ static void start_game(
 		SetFadeEffectDelay(TICKS_PER_SECOND/2);
 	}
 
-	// Screen should already be black! 
+	// Screen should already be black!
 	validate_world_window();
-	
-	draw_interface();
 
-#ifdef PERFORMANCE	
+	draw_interface();
+#ifdef __EMSCRIPTEN__
+	fprintf(stderr, "[start_game] draw_interface() done\n");
+#endif
+
+#ifdef PERFORMANCE
 	PerfControl(perf_globals, true);
 #endif
 
@@ -2843,7 +2886,13 @@ static void start_game(
 		set_keyboard_controller_status(true);
 	}
 
+#ifdef __EMSCRIPTEN__
+	fprintf(stderr, "[start_game] about to call SoundManager::UpdateListener()\n");
+#endif
 	SoundManager::instance()->UpdateListener();
+#ifdef __EMSCRIPTEN__
+	fprintf(stderr, "[start_game] exit\n");
+#endif
 }
 
 // LP: "static" removed
