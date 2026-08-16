@@ -2425,6 +2425,64 @@ there was no way to verify it actually worked.
         markers at all before now) and its `continue_starting_game`
         lambda. Compiles clean. **Still no confirmed repro data for this
         one.**
+  - [x] **Tenth round: game-start lockup root-caused and fixed -- a
+        blocking wait on music that only became reachable once audio
+        started working (M5).** User's hint ("it must be something that
+        was previously working -- check sound paths") was correct.
+        `interface_fade_out()` (`interface.cpp`, commented "Called right
+        before we start a game", invoked by both `begin_game()` and
+        `load_and_start_game()` with `fade_music=true`) ends with
+        `while(Music::instance()->Playing()) Music::instance()->Idle();`
+        -- an unconditional deadlock here. Music playback is only
+        advanced by `OpenALManager::Tick()` -> `ProcessAudioQueue()`,
+        driven once per frame from `main_event_loop_iteration()`
+        (`shell.cpp`) -- but `interface_fade_out()` is itself called
+        synchronously from *inside* that same call. The loop blocks the
+        very frame loop that would ever make `Playing()` return false;
+        `Music::Idle()` alone does not drain the audio queue. Nothing
+        yields, so the tab freezes hard: no console output, no
+        heartbeat, no wasm trap, both browsers -- exactly as reported.
+      - **Why it looked like a regression from alpha-1.0/1.1**: before
+        this milestone's audio fixes no source ever initialized
+        successfully, so `Playing()` was always false and this loop
+        exited instantly. Making audio work turned a silent no-op into
+        an infinite loop. It also explains why none of the previous
+        round's `begin_game()`/`load_and_start_game()`/`start_game()`
+        markers ever printed: the stall happens in
+        `interface_fade_out()`, which runs before all of them.
+      - Fixed by skipping the wait under Emscripten and calling
+        `Music::instance()->Pause()` directly (native branch untouched).
+        Music cuts instead of completing its half-second fade -- the
+        same tradeoff already accepted for `full_fade()` (`fades.cpp`).
+      - Found and fixed the identical pattern in `ResetLevelScript()`
+        (`XML_LevelScript.cpp`), called from `load_game_from_file()` --
+        squarely on the Continue Saved Game path, and likely the one
+        that actually fired first when loading a save. The
+        `ClearLevelPlaylist()` immediately after stops the music
+        regardless.
+      - Audited for others of this shape: one remains, in
+        `display_epilogue()` (`interface.cpp`), a `do { Music::Idle(); }
+        while (machine_tick_count()-ticks<10)` busy-wait. Left alone --
+        bounded (10 ticks, cannot deadlock), end-of-scenario rather than
+        on any tested path, and needlessly touching pre-fork code is
+        against this project's conventions. Noted, not fixed.
+      - **Music-stop-on-dialog-open: still unresolved, ambiguity
+        identified.** `[audio player] failed: assigned=1 updated=1
+        played=0` appears at dialog-open time; `played=0` means
+        `AudioPlayer::Play()` returned false, i.e. zero buffers queued
+        after `FillBuffers()`. But the same line also appears repeatedly
+        while music is confirmed still playing -- so it is probably
+        ordinary short sound effects being retired normally, not the
+        music player dying. Added a per-player line to the throttled
+        `[audio tick]` diagnostic reporting, for each queued player,
+        whether it is a `MusicPlayer`, whether it holds an OpenAL
+        source, that source's real `AL_SOURCE_STATE`, and `IsActive()`.
+        That resolves the ambiguity and shows whether the music source
+        is genuinely `AL_STOPPED` (e.g. a buffer underrun during an
+        expensive dialog-open frame -- plausible given it is
+        Safari-only, and that `Tick()` runs only once per frame here
+        versus native's independent high-frequency audio thread).
+- [x] **M6 — Save games / prefs persistence** -- superseded by M4i (IDBFS
       persistence) above, done as part of the save/load milestone rather
       than as a separate later pass.
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)

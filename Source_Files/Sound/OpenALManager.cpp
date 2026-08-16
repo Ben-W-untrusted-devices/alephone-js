@@ -359,6 +359,22 @@ void OpenALManager::Tick() {
 		last_tick_log = now;
 		fprintf(stderr, "[audio tick] queue_size=%zu master_volume=%.3f music_volume=%.3f\n",
 			audio_players_queue.size(), master_volume.load(), music_volume.load());
+		// Web port diagnostic (see ../../WEB_PORT_PLAN.md, M5): real-browser
+		// reports of music going silent (Safari-specific) with the queue,
+		// volumes, and AudioContext.state all reported completely normal
+		// throughout -- this checks the one thing not yet checked: whether
+		// the queued player really is music, and what its OpenAL source's
+		// *actual* AL_SOURCE_STATE is (AL_PLAYING=0x1012/AL_PAUSED=0x1013/
+		// AL_STOPPED=0x1014/AL_INITIAL=0x1011), independent of whatever our
+		// own bookkeeping believes. Safe to remove once root-caused.
+		for (const auto& player : audio_players_queue) {
+			bool isMusic = std::dynamic_pointer_cast<MusicPlayer>(player) != nullptr;
+			ALint sourceState = -1;
+			bool hasSource = player->audio_source != nullptr;
+			if (hasSource) alGetSourcei(player->audio_source->source_id, AL_SOURCE_STATE, &sourceState);
+			fprintf(stderr, "[audio tick] player is_music=%d has_source=%d al_source_state=0x%x is_active=%d\n",
+				isMusic, hasSource, sourceState, player->IsActive());
+		}
 	}
 #endif
 	ProcessAudioQueue();

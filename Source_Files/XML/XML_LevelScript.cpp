@@ -209,9 +209,20 @@ void ResetLevelScript()
 	// For whatever previous music had been playing...
 	Music::instance()->Fade(0, MACHINE_TICKS_PER_SECOND/2, MusicPlayer::FadeType::Sinusoidal);
 
+#ifndef __EMSCRIPTEN__
 	while (Music::instance()->Playing())
 		Music::instance()->Idle();
-	
+#endif
+	// Web port (see ../../WEB_PORT_PLAN.md, M5): the wait above deadlocks
+	// under Emscripten -- see interface_fade_out() (interface.cpp) for the
+	// full explanation. Same shape, same cause: music is only advanced by
+	// OpenALManager::Tick() from the frame loop, and this runs
+	// synchronously inside that loop (ResetLevelScript() is called from
+	// load_game_from_file(), i.e. on the Continue Saved Game path). The
+	// ClearLevelPlaylist() below stops the music regardless, so skipping
+	// the fade-out wait just makes it cut instead of fading.
+
+
 	// If no scripts were loaded or none of them had music specified,
 	// then don't play any music
 	Music::instance()->ClearLevelPlaylist();

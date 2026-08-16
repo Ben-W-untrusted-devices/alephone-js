@@ -3891,13 +3891,40 @@ void interface_fade_out(
 
 		full_fade(_cinematic_fade_out, current_picture_clut);
 		
-		if(fade_music) 
+		if(fade_music)
 		{
-			while(Music::instance()->Playing()) 
+#ifdef __EMSCRIPTEN__
+			// Web port (see ../../WEB_PORT_PLAN.md, M5): this wait is a
+			// deadlock under Emscripten, and was the "starting a new game or
+			// loading a save locks up the browser" bug. Music playback is
+			// only advanced by OpenALManager::Tick() -> ProcessAudioQueue(),
+			// driven once per frame from main_event_loop_iteration()
+			// (shell.cpp) -- but interface_fade_out() is itself called
+			// synchronously from *inside* that same call, via
+			// begin_game()/load_and_start_game(). So spinning here waiting
+			// for music to stop blocks the very loop that would ever stop
+			// it: Music::Idle() alone does not drain the audio queue.
+			// Nothing yields, so the tab freezes completely -- no console
+			// output, no heartbeat, exactly as reported.
+			//
+			// This only became reachable once audio actually worked: before
+			// the M5 fixes, Playing() was always false (no source ever
+			// initialized successfully), so the loop exited instantly and
+			// both flows worked. That's why this looks like a regression
+			// from something previously fine.
+			//
+			// Skipping the wait means the music cuts rather than finishing
+			// its half-second fade -- the same tradeoff already made for
+			// full_fade() (see fades.cpp), which likewise completes
+			// instantly here instead of animating.
+			Music::instance()->Pause();
+#else
+			while(Music::instance()->Playing())
 				Music::instance()->Idle();
 
 			/* and give up the memory */
 			Music::instance()->Pause();
+#endif
 		}
 
 		paint_window_black();
