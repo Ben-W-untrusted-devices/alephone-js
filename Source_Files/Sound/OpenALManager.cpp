@@ -59,16 +59,31 @@ EM_JS(void, web_log_al_sources, (), {
         var timing = (typeof MainLoop !== 'undefined') ? MainLoop.timingMode : 'n/a';
         Module.printErr('[audio js] ctx.state=' + ctx.state + ' ctx.currentTime=' + ctx.currentTime.toFixed(2)
             + ' visibility=' + document.visibilityState + ' MainLoop.timingMode=' + timing);
+        // Only report sources that are actually in use. The pool is 128
+        // strong and idle ones all look identical (AL_INITIAL, gain=1, and
+        // a single zero-length null buffer left by ResetSource()'s
+        // alSourcei(AL_BUFFER, 0)) -- printing all of them buries the few
+        // interesting lines.
+        var shown = 0;
         for (var i in AL.currentCtx.sources) {
             var src = AL.currentCtx.sources[i];
+            if (src.state === 0x1011 /* AL_INITIAL */) continue;
             var gainVal = (src.gain && src.gain.gain) ? src.gain.gain.value : 'n/a';
+            // bufLengths: the real per-buffer sample counts. A zero here is
+            // the smoking gun -- libopenal.js's scheduler skips zero-length
+            // buffers entirely, so the source sits at AL_PLAYING forever
+            // with audioQueue=0 and never makes a sound.
+            var bufLengths = src.bufQueue ? src.bufQueue.map(function(b) { return b.length; }).join(',') : 'n/a';
             Module.printErr('[audio js] src#' + i + ' state=0x' + src.state.toString(16)
                 + ' gain=' + gainVal
                 + ' bufQueue=' + (src.bufQueue ? src.bufQueue.length : 'n/a')
+                + ' bufLengths=[' + bufLengths + ']'
                 + ' bufsProcessed=' + src.bufsProcessed
                 + ' audioQueue=' + (src.audioQueue ? src.audioQueue.length : 'n/a')
-                + ' looping=' + src.looping + ' type=0x' + (src.type || 0).toString(16));
+                + ' type=0x' + (src.type || 0).toString(16));
+            if (++shown >= 8) break;
         }
+        if (!shown) Module.printErr('[audio js] (no sources in use)');
     } catch (e) {
         Module.printErr('[audio js] web_log_al_sources failed: ' + e);
     }
@@ -252,8 +267,16 @@ void OpenALManager::ProcessAudioQueue() {
 			ALint queuedBuffers = -1;
 			if (stepAssigned && audio->audio_source)
 				alGetSourcei(audio->audio_source->source_id, AL_BUFFERS_QUEUED, &queuedBuffers);
-			fprintf(stderr, "[audio player] failed: is_music=%d assigned=%d updated=%d played=%d queued_buffers=%d\n",
-				isMusic, stepAssigned, stepUpdated, stepPlayed, queuedBuffers);
+			// rate/format/stereo too: Emscripten's alBufferData rejects a
+			// zero (or otherwise invalid) frequency outright, leaving the
+			// buffer zero-length -- and libopenal.js's scheduler silently
+			// skips zero-length buffers, which is exactly the observed
+			// "bufQueue=1 but audioQueue=0, nothing ever audible" state.
+			// OpenALManager is a friend of AudioPlayer, hence the direct
+			// access to these.
+			fprintf(stderr, "[audio player] failed: is_music=%d assigned=%d updated=%d played=%d queued_buffers=%d rate=%u format=%d stereo=%d\n",
+				isMusic, stepAssigned, stepUpdated, stepPlayed, queuedBuffers,
+				audio->rate, (int)audio->format, audio->stereo);
 		}
 #else
 		const bool mustStillPlay = !audio->stop_signal && audio->AssignSource() && audio->Update() && audio->Play();
