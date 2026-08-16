@@ -81,7 +81,27 @@ EM_JS(void, web_log_al_sources, (), {
                 + ' bufsProcessed=' + src.bufsProcessed
                 + ' audioQueue=' + (src.audioQueue ? src.audioQueue.length : 'n/a')
                 + ' type=0x' + (src.type || 0).toString(16));
-            if (++shown >= 8) break;
+            // Spatialization: distance attenuation happens in the PannerNode,
+            // *after* the gain node logged above, so a source can show a
+            // healthy gain and still be inaudible. If the listener never
+            // moves off the origin while sounds sit at real world
+            // coordinates, an inverse-distance model attenuates them to
+            // nothing -- which would look exactly like the current symptom.
+            if (src.panner) {
+                var lp = AL.currentCtx.listener ? AL.currentCtx.listener.position : null;
+                var dist = 'n/a';
+                if (lp && src.position) {
+                    var dx = src.position[0] - lp[0], dy = src.position[1] - lp[1], dz = src.position[2] - lp[2];
+                    dist = Math.sqrt(dx*dx + dy*dy + dz*dz).toFixed(2);
+                }
+                Module.printErr('[audio js]   spatial: pos=[' + (src.position || []).join(',')
+                    + '] listener=[' + (lp ? lp.join(',') : 'n/a')
+                    + '] distance=' + dist
+                    + ' refDistance=' + src.refDistance + ' maxDistance=' + src.maxDistance
+                    + ' rolloff=' + src.rolloffFactor + ' relative=' + src.relative
+                    + ' distanceModel=' + src.panner.distanceModel);
+            }
+            if (++shown >= 6) break;
         }
         if (!shown) Module.printErr('[audio js] (no sources in use)');
     } catch (e) {

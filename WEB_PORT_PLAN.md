@@ -2536,6 +2536,48 @@ there was no way to verify it actually worked.
         signature. Compiles clean. **Needs a real-browser log, ideally
         one captured while in gameplay**, since that is the case with no
         working audio at all.
+  - [ ] **Twelfth round: sound effects are NOT broken -- they buffer,
+        schedule and play correctly. This is an audibility problem, not
+        a data problem (M5).** The in-gameplay log settles it:
+        `src#5 bufLengths=[4044] audioQueue=1 state=AL_PLAYING`,
+        `src#6`/`src#7 bufLengths=[4096,4096,4096,4096] audioQueue=1
+        type=0x1029 (AL_STREAMING)`. Real decoded data, genuinely
+        scheduled into Web Audio, source state `AL_PLAYING`. So the
+        previous round's "SFX produce no data" theory is wrong, and the
+        `rate=22050 format=1 stereo=0` on the failure lines confirms the
+        format/rate path is fine too.
+      - The `[audio player] failed: ... queued_buffers=0` lines are
+        therefore **normal retirement**, not failures: short one-shot
+        sounds that have played out, whose next `FillBuffers()`
+        legitimately produces nothing. That ambiguity (flagged last
+        round) is now resolved -- they are not the bug and should stop
+        being read as one.
+      - **What is actually suspicious is gain.** Music sits at `0.0999`
+        (= master 0.398 x music 0.251) and is audible. In-gameplay
+        sounds sit at `0.0184` and `0.0278` -- roughly 0.046 and 0.070
+        of master. Two candidate causes, not yet distinguished:
+        (a) `SoundPlayer::ComputeVolumeForTransition()` ramps gain from
+        zero toward the target a fraction per call, and short sounds may
+        finish before becoming audible; (b) distance attenuation in the
+        Web Audio `PannerNode`, which is applied *after* the gain node
+        being logged, so a source can show a healthy gain and still be
+        silent -- e.g. if the listener sits at the origin while sounds
+        are at real world coordinates.
+      - Checked (b)'s prerequisite: `SoundManager::Idle()` (which calls
+        `UpdateListener()`) is reached only via `global_idle_proc()`,
+        which `main_event_loop_iteration()` calls only when `poll_event`
+        is true -- during gameplay that is gated on
+        `TICKS_BETWEEN_EVENT_POLL`, so the listener *is* updated, just
+        intermittently. Not disqualifying, so (b) stays live.
+      - Extended the JS dump with the spatialization state that decides
+        this: per source `position`, the listener `position`, computed
+        distance, `refDistance`/`maxDistance`/`rolloffFactor`,
+        `relative`, and the panner's `distanceModel`. Also trimmed the
+        dump further (6 sources max) since it is now two lines per
+        source. **Needs one more in-gameplay log**: if distance is large
+        relative to `refDistance`/`maxDistance`, cause (b) is confirmed
+        and the fix is in the 3D parameters; if the geometry looks sane,
+        it is (a) and the fix is in the volume-transition ramp.
 - [x] **M6 — Save games / prefs persistence** -- superseded by M4i (IDBFS
       persistence) above, done as part of the save/load milestone rather
       than as a separate later pass.
