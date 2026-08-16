@@ -2619,6 +2619,96 @@ there was no way to verify it actually worked.
 - [x] **M6 — Save games / prefs persistence** -- superseded by M4i (IDBFS
       persistence) above, done as part of the save/load milestone rather
       than as a separate later pass.
+**Alpha 1.2 tagged** at this point (`e7ef1e02`): sound and music both
+working in a real browser, on top of everything in alpha-1.1. See the M5
+entries above for the chain of fixes (non-loopback fallback, source-count
+overflow, the alSourcei parameter-whitelist trap, `AL_MAX_DISTANCE`/
+`AL_REFERENCE_DISTANCE` degenerate values, and the music-wait deadlock).
+
+- [ ] **M6b — OpenGL rendering.** Approach agreed with the user: get it
+      working through Emscripten's legacy GL emulation *first*, then migrate
+      to WebGL2/GLES3 subsystem-by-subsystem, keeping it working throughout.
+      Post-processing (bloom/blur/gamma) is in scope for the first milestone.
+  - [x] **Stage 1 — build plumbing.** Root-caused why OpenGL was off: it was
+        a build accident, not a decision. `configure.ac`'s OpenGL probe keys
+        off `$target`, but emconfigure never sets `--host`, so the triple
+        still read `aarch64-apple-darwin24.6.0` (confirmed in
+        `build-wasm/config.log`) -- the wasm build took the **darwin** branch,
+        injected `-D__DARWIN__ -F/System/Library/Frameworks
+        -I/System/Library/Frameworks/OpenGL.framework/Headers` into `CPPFLAGS`
+        for the entire build, then failed to find `<OpenGL/gl.h>` and silently
+        disabled GL. Fixed by testing the existing `ax_target_emscripten` flag
+        (the same compile-check mechanism M3 added for the Boost::Filesystem
+        guard) *before* the host-based `AS_CASE`, probing `<GLES3/gl3.h>` with
+        an empty `SYS_GL_LIBS` (emcc links its own GL at final link). Also
+        skipped the `-lGLU` and `<GL/glext.h>` follow-up checks under
+        Emscripten -- neither exists there, and the `-lGLU` probe would have
+        appended a link flag that breaks the wasm link.
+      - Result: `checking for OpenGL support... yes`, `HAVE_OPENGL 1` in
+        `build-wasm/config.h`, `OPENGL_SOURCES = Rasterizer_Shader.cpp
+        RenderRasterize_Shader.cpp` in the generated Makefile, and zero
+        remaining `__DARWIN__`/OpenGL.framework references in the wasm build.
+      - Useful discovery for the stages below: Emscripten ships
+        *desktop-style* `GL/gl.h`, `GL/glu.h` and `GL/glext.h` headers that
+        **declare** the full legacy API (`glBegin`, `glMatrixMode`,
+        `glNewList`, `glPushAttrib`, `glClipPlane`, `gluScaleImage`...). So
+        legacy calls will compile; the question is only which ones actually
+        *link*. Only `gluScaleImage` is used from GLU (2 sites:
+        `OGL_Textures.cpp:1198`, `ImageLoader_Shared.cpp:157`) -- a plain RGBA
+        rescale, cheap to replace if it doesn't link.
+      - **Everything compiled.** With `HAVE_OPENGL` on, all ~1000 GL call
+        sites across 24 files built without a single compile error --
+        including every ARB/EXT-suffixed call. The only failures were at
+        link, which is the useful outcome: it converts a vague "big GL
+        rewrite" into a precise symbol list.
+      - **The emulation covers far more than the plan assumed.** Relinking
+        with `-sLEGACY_GL_EMULATION=1` switches the link from
+        `-lGL-getprocaddr` to `-lGL-emu-getprocaddr` and resolves nearly
+        everything. Confirmed *resolved* by the emulation, contrary to the
+        pre-stage estimate: the entire ARB shader-object API
+        (`glCreateShaderObjectARB`, `glUseProgramObjectARB`, ...),
+        `glActiveTextureARB`, `glMultiTexCoord4fARB`, the EXT FBO entry
+        points, `glPushAttrib`/`glPopAttrib`, `glClipPlane`, the whole
+        client-array family, and the fixed-function matrix/fog/alpha-test
+        state. **Planned Stage 2 (the ARB/EXT-to-core compatibility shim) is
+        therefore largely unnecessary** and should be dropped rather than
+        written.
+      - **Complete remaining undefined-symbol list (10 symbols, 4 groups):**
+        1. Display lists -- `glGenLists`, `glNewList`, `glEndList`,
+           `glCallList`, `glDeleteLists`. Two users:
+           `OGL_Render.cpp:3028-3094` (`OGL_RenderText` builds a one-shot
+           list and replays it for the drop shadow -- replacing each
+           `glCallList` with a direct `GetOnScreenFont().OGL_Render(Text)`
+           is exactly equivalent, just uncached) and
+           `FontHandler.cpp:176,298-332,358-366` (a real 256-list glyph
+           cache; needs the per-glyph rect parameters kept in a table and
+           re-issued directly -- a bounded refactor, the only non-trivial
+           item in the list).
+        2. `gluScaleImage` (`OGL_Textures.cpp:1198`,
+           `ImageLoader_Shared.cpp:157`) -- declared by Emscripten's
+           `GL/glu.h` but not implemented; needs our own RGBA rescale.
+        3. `glLogicOp` (`OGL_Faders.cpp:144`, `GL_XOR`) and
+           `glPolygonStipple` (`OGL_Render.cpp:2733`) -- no GLES equivalent;
+           both are static/XOR fader effects that can degrade gracefully.
+        4. `glColor4usv` (`OGL_Faders.cpp:133`) and `glGetDoublev`
+           (`OGL_Render.cpp`, 8 sites) -- trivial widening/narrowing
+           wrappers. Note `OGL_Setup.cpp:575` already provides an
+           `SglColor4usv()` portability wrapper used at
+           `OGL_Render.cpp:2613`; `OGL_Faders.cpp` just calls the raw
+           entry point instead.
+      - **Emscripten GL is gated opt-in for now.** Because the symbols above
+        are still unresolved, a bare `emconfigure` deliberately keeps
+        OpenGL *off* and builds the known-good software-renderer
+        configuration; `--enable-opengl` turns it on to work on it. Both
+        paths verified (`checking for OpenGL support... no` by default,
+        `... yes` with the flag). This keeps `web/build-engine.sh` green
+        for everyone while the renderer is under construction.
+      - Still outstanding for later stages, and *not* visible as link
+        errors because they are enum values rather than symbols:
+        `GL_QUADS`/`GL_POLYGON` in `glDrawArrays` (32 of 48 draw sites) and
+        `GL_DOUBLE` vertex data (8 sites, plus the two file-local
+        `ExtendedVertexData` structs). These compile fine and will fail at
+        runtime instead.
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)
 
 ## Status

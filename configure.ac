@@ -264,7 +264,28 @@ dnl Check for OpenGL.
 AS_IF([test "x$enable_opengl" != "xno"],
       [ AC_MSG_CHECKING([for OpenGL support])
         compiled_opengl=no
-        AS_CASE([$target],
+        dnl Web port (see WEB_PORT_PLAN.md, M6): this AS_CASE keys off $target,
+        dnl which emconfigure leaves reporting the *build* machine (see the
+        dnl ax_target_emscripten comment above) -- so on a macOS host the wasm
+        dnl build took the darwin branch, injected -D__DARWIN__ and the
+        dnl OpenGL.framework include path into CPPFLAGS for the whole build,
+        dnl then failed to find <OpenGL/gl.h> and silently disabled OpenGL.
+        dnl Test Emscripten first so it never reaches the host-based cases:
+        dnl emcc supplies GLES headers itself and needs no -l flags (it links
+        dnl its own GL implementation at final link time).
+        dnl Emscripten GL is still under construction (M6b stages 2-5: display
+        dnl lists, glLogicOp/glPolygonStipple, gluScaleImage and the
+        dnl GL_QUADS/GL_POLYGON/GL_DOUBLE conversions are not done yet), so it
+        dnl is deliberately *opt-in* here -- a bare emconfigure keeps building
+        dnl the known-good software-renderer configuration. Pass
+        dnl --enable-opengl explicitly to work on it.
+        AS_IF([test "x$ax_target_emscripten" = "xyes"],
+              [ AS_IF([test "x$enable_opengl" = "xyes"],
+                      [ SYS_GL_LIBS=""
+                        AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[
+                          #include <GLES3/gl3.h>
+                          ]], [[]])],[ compiled_opengl=yes ],[]) ]) ],
+              [ AS_CASE([$target],
                 [*-*-cygwin* | *-*-mingw32*],
                 [ SYS_GL_LIBS="-lGLEW -lopengl32 -lglu32"
                   LIBS="$LIBS -lstdc++" ],
@@ -280,17 +301,22 @@ AS_IF([test "x$enable_opengl" != "xno"],
           #else
           #include <OpenGL/gl.h>
           #endif
-          ]], [[]])],[ compiled_opengl=yes ],[])
+          ]], [[]])],[ compiled_opengl=yes ],[]) ])
         AC_MSG_RESULT($compiled_opengl)
         AS_IF([test "x$compiled_opengl" = "xyes"],
               [ have_opengl=true
                 AC_DEFINE([HAVE_OPENGL], [1], [OpenGL support enabled])
-                AC_CHECK_LIB([GLU], [gluScaleImage],
-                             [SYS_GL_LIBS="$SYS_GL_LIBS -lGLU"],
-                             ,
-                             [$SYS_GL_LIBS])
-                LIBS="$LIBS $SYS_GL_LIBS"
-                AC_CHECK_HEADERS([GL/glext.h], [], [], [#include <GL/gl.h>]) ],
+                dnl Web port (see WEB_PORT_PLAN.md, M6): Emscripten has neither
+                dnl GLU nor <GL/glext.h>, and needs no -l flags at all -- both
+                dnl checks below would fail and the -lGLU probe would even
+                dnl append a link flag that breaks the wasm link.
+                AS_IF([test "x$ax_target_emscripten" != "xyes"],
+                      [ AC_CHECK_LIB([GLU], [gluScaleImage],
+                                     [SYS_GL_LIBS="$SYS_GL_LIBS -lGLU"],
+                                     ,
+                                     [$SYS_GL_LIBS])
+                        LIBS="$LIBS $SYS_GL_LIBS"
+                        AC_CHECK_HEADERS([GL/glext.h], [], [], [#include <GL/gl.h>]) ]) ],
               [ AS_IF([test "x$enable_opengl" = "xyes"],
                       [AC_MSG_ERROR([OpenGL support requested but not available])],
                       [AC_MSG_WARN([OpenGL not available])]) ]) ])
