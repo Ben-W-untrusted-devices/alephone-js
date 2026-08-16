@@ -2482,6 +2482,60 @@ there was no way to verify it actually worked.
         expensive dialog-open frame -- plausible given it is
         Safari-only, and that `Tick()` runs only once per frame here
         versus native's independent high-frequency audio thread).
+  - [ ] **Eleventh round: lockup fix confirmed. Two audio symptoms
+        remain, and the new per-player data reframes them (M5).**
+        User confirms no more lockup -- starting a game and loading a
+        save both work now. Remaining: music halts when opening
+        Preferences / Continue Saved Game (Safari only), and no sound at
+        all in gameplay (both browsers).
+      - **The per-player diagnostic ruled out the underrun theory.**
+        `al_source_state=0x1012` is `AL_PLAYING`, reported for both the
+        music player *and* a sound-effect player, with `is_active=1`,
+        a running `AudioContext`, and non-zero volumes -- so OpenAL
+        believes everything is playing while nothing is audible. Not an
+        `AL_STOPPED` underrun as hypothesized last round.
+      - **Re-reading the log suggests the two symptoms may be one bug,
+        not two.** `[audio player] failed: assigned=1 updated=1
+        played=0` appears immediately after *every* menu click -- i.e.
+        the menu click sound never plays. `AudioPlayer::Play()` returns
+        false exactly when zero buffers are queued after `FillBuffers()`,
+        which for a brand-new player means its very first fill produced
+        no data. Music (streamed from `Music.ogg` via `SndfileDecoder`)
+        works; sound effects (from `Sounds.sndA`, a completely different
+        data path) appear to produce nothing. That would explain
+        "no sound in gameplay" directly, since gameplay audio is almost
+        entirely sound effects -- and it means the two reports are
+        probably "SFX never work" plus a separate, Safari-specific music
+        issue, rather than one general silence.
+      - Traced the SFX data path by reading (`SoundPlayer::GetNextData()`
+        -> `ProcessData()`, `AudioPlayer::FillBuffers()`) without finding
+        a definite fault: the copy path is straightforward, and
+        `MustDisableHrtf()` is necessarily false here (it requires
+        `AL_SOFT_direct_channels_remix`, unsupported by Emscripten's
+        OpenAL), so the simple non-HRTF branch is taken. Also checked
+        and ruled out `SoundManager::GetCurrentAudioTick()` freezing
+        volume transitions at zero -- it is wall-clock based
+        (`machine_tick_count()`), not driven by the audio callback this
+        port no longer has.
+      - Added two diagnostics rather than guess further. (1) The
+        `[audio player] failed` line now reports `is_music` and the
+        source's actual `AL_BUFFERS_QUEUED`, which separates "produced
+        no data at all" (`queued_buffers=0`) from an `alGetError()`
+        failure, and separates real SFX failures from sounds simply
+        finishing and being retired normally. (2) A new `EM_JS`
+        `web_log_al_sources()`, called from the same throttled tick,
+        dumps the *real* Web Audio state under each AL source -- gain
+        node value, `bufQueue`/`audioQueue` lengths, `bufsProcessed`,
+        looping, source type -- plus `AudioContext.state`/`currentTime`,
+        `document.visibilityState` and `MainLoop.timingMode`. Those last
+        two matter because Emscripten's own scheduler
+        (`AL.scheduleContextAudio`, driven by its own `setInterval`, see
+        `libopenal.js`) silently early-returns entirely when
+        `timingMode === EM_TIMING_RAF && visibilityState != 'visible'`,
+        which would produce exactly this "AL_PLAYING but inaudible"
+        signature. Compiles clean. **Needs a real-browser log, ideally
+        one captured while in gameplay**, since that is the case with no
+        working audio at all.
 - [x] **M6 — Save games / prefs persistence** -- superseded by M4i (IDBFS
       persistence) above, done as part of the save/load milestone rather
       than as a separate later pass.

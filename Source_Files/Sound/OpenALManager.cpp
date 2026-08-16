@@ -41,6 +41,39 @@
 // has nothing left to fire on. This logs the actual state so the next
 // report is definitive rather than a guess, and arms one more redundant
 // listener as a safety net for exactly that recreation case.
+// Web port diagnostic (see ../../WEB_PORT_PLAN.md, M5): dumps the *real*
+// Web Audio state behind each OpenAL source. The C++ side already reports
+// AL_SOURCE_STATE=AL_PLAYING with a running AudioContext and non-zero
+// volumes while nothing is audible, so the remaining candidates all live
+// below the AL abstraction: a zero gain node, an empty scheduled-buffer
+// queue (`audioQueue`), or Emscripten's own scheduler having bailed out.
+// That scheduler (`AL.scheduleContextAudio`, driven by its own setInterval
+// -- see libopenal.js) early-returns entirely when
+// `MainLoop.timingMode === EM_TIMING_RAF && document.visibilityState !=
+// 'visible'`, so those two are logged as well. Reaches into libopenal.js's
+// internal `AL` namespace, same as web_log_audio_context_state() below.
+EM_JS(void, web_log_al_sources, (), {
+    try {
+        if (typeof AL === 'undefined' || !AL.currentCtx || !AL.currentCtx.audioCtx) return;
+        var ctx = AL.currentCtx.audioCtx;
+        var timing = (typeof MainLoop !== 'undefined') ? MainLoop.timingMode : 'n/a';
+        Module.printErr('[audio js] ctx.state=' + ctx.state + ' ctx.currentTime=' + ctx.currentTime.toFixed(2)
+            + ' visibility=' + document.visibilityState + ' MainLoop.timingMode=' + timing);
+        for (var i in AL.currentCtx.sources) {
+            var src = AL.currentCtx.sources[i];
+            var gainVal = (src.gain && src.gain.gain) ? src.gain.gain.value : 'n/a';
+            Module.printErr('[audio js] src#' + i + ' state=0x' + src.state.toString(16)
+                + ' gain=' + gainVal
+                + ' bufQueue=' + (src.bufQueue ? src.bufQueue.length : 'n/a')
+                + ' bufsProcessed=' + src.bufsProcessed
+                + ' audioQueue=' + (src.audioQueue ? src.audioQueue.length : 'n/a')
+                + ' looping=' + src.looping + ' type=0x' + (src.type || 0).toString(16));
+        }
+    } catch (e) {
+        Module.printErr('[audio js] web_log_al_sources failed: ' + e);
+    }
+});
+
 EM_JS(void, web_log_audio_context_state, (), {
     try {
         if (typeof AL === 'undefined' || !AL.currentCtx || !AL.currentCtx.audioCtx) {
@@ -207,8 +240,20 @@ void OpenALManager::ProcessAudioQueue() {
 			}
 		}
 		if (!mustStillPlay && !audio->stop_signal) {
-			fprintf(stderr, "[audio player] failed: assigned=%d updated=%d played=%d\n",
-				stepAssigned, stepUpdated, stepPlayed);
+			// Also report whether this was music or a sound effect, and how
+			// many buffers were actually queued on its AL source. Play()
+			// returns false precisely when zero buffers are queued after
+			// FillBuffers() -- so queued=0 here means the player produced no
+			// audio data at all (a decoding/data problem), while queued>0
+			// would mean an alGetError() failure instead. This distinguishes
+			// "menu click sounds never play" from "a finished sound is being
+			// retired normally", which currently look identical.
+			bool isMusic = std::dynamic_pointer_cast<MusicPlayer>(audio) != nullptr;
+			ALint queuedBuffers = -1;
+			if (stepAssigned && audio->audio_source)
+				alGetSourcei(audio->audio_source->source_id, AL_BUFFERS_QUEUED, &queuedBuffers);
+			fprintf(stderr, "[audio player] failed: is_music=%d assigned=%d updated=%d played=%d queued_buffers=%d\n",
+				isMusic, stepAssigned, stepUpdated, stepPlayed, queuedBuffers);
 		}
 #else
 		const bool mustStillPlay = !audio->stop_signal && audio->AssignSource() && audio->Update() && audio->Play();
@@ -375,6 +420,7 @@ void OpenALManager::Tick() {
 			fprintf(stderr, "[audio tick] player is_music=%d has_source=%d al_source_state=0x%x is_active=%d\n",
 				isMusic, hasSource, sourceState, player->IsActive());
 		}
+		web_log_al_sources();
 	}
 #endif
 	ProcessAudioQueue();
