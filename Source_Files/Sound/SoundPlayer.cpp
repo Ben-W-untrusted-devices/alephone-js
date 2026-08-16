@@ -252,15 +252,19 @@ bool SoundPlayer::SetUpALSourceInit() {
 		alSource3i(audio_source->source_id, AL_POSITION, 0, 0, 0);
 		alSourcei(audio_source->source_id, AL_ROLLOFF_FACTOR, 0);
 		alSource3i(audio_source->source_id, AL_DIRECTION, 0, 0, 0);
-		alSourcei(audio_source->source_id, AL_REFERENCE_DISTANCE, 0);
 		// Web port (see ../../WEB_PORT_PLAN.md, M5; AudioPlayer::SetUpALSourceInit()
-		// has the fuller explanation): AL_MAX_DISTANCE=0 throws an uncaught
-		// Web Audio RangeError under Emscripten (PannerNode.maxDistance must
-		// be strictly positive) -- confirmed via a real-browser crash on
-		// every 2D UI sound (e.g. a menu-click sound). This player is
-		// non-positional here (AL_SOURCE_RELATIVE is TRUE), so the value is
-		// otherwise unused -- skip it and leave the PannerNode default.
+		// has the fuller explanation): AL_REFERENCE_DISTANCE=0 silences the
+		// source outright under Emscripten (PannerNode inverse model:
+		// 0/0 = NaN), and AL_MAX_DISTANCE=0 throws an uncaught RangeError
+		// (Web Audio requires it strictly positive). This is the 2D branch,
+		// and SetUpALSourceIdle()'s 2D path never sets the reference
+		// distance again -- so the 0 written here stuck for the source's
+		// whole life and made *every* 2D sound (menu clicks, and most
+		// in-game effects) permanently inaudible. These sources are
+		// non-positional (AL_SOURCE_RELATIVE is TRUE), so both values are
+		// unused -- skip them and keep the PannerNode's safe defaults.
 #ifndef __EMSCRIPTEN__
+		alSourcei(audio_source->source_id, AL_REFERENCE_DISTANCE, 0);
 		alSourcei(audio_source->source_id, AL_MAX_DISTANCE, 0);
 #endif
 	}
@@ -384,7 +388,12 @@ SetupALResult SoundPlayer::SetUpALSource3D() {
 
 	const auto finalBehaviorParameters = ComputeVolumeForTransition(behaviorParameters);
 
-	alSourcef(audio_source->source_id, AL_REFERENCE_DISTANCE, finalBehaviorParameters.distance_reference);
+	// Web port (see ../../WEB_PORT_PLAN.md, M5): same reasoning as the
+	// AL_MAX_DISTANCE clamp just below -- distance_reference also ramps up
+	// from 0, and a reference distance of 0 makes the Web Audio inverse
+	// distance model evaluate to NaN, silencing the source entirely rather
+	// than merely mis-attenuating it.
+	alSourcef(audio_source->source_id, AL_REFERENCE_DISTANCE, std::max(finalBehaviorParameters.distance_reference, 1.0f));
 	// Web port (see ../../WEB_PORT_PLAN.md, M5): finalBehaviorParameters.distance_max
 	// can legitimately be (at or near) 0 on a sound's very first Update() --
 	// ComputeVolumeForTransition() interpolates from sound_transition.current_sound_behavior,

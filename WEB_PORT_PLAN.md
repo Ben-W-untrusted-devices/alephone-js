@@ -2578,6 +2578,44 @@ there was no way to verify it actually worked.
         relative to `refDistance`/`maxDistance`, cause (b) is confirmed
         and the fix is in the 3D parameters; if the geometry looks sane,
         it is (a) and the fix is in the volume-transition ramp.
+  - [x] **Thirteenth round: root cause of "no sound effects" found and
+        fixed -- `AL_REFERENCE_DISTANCE = 0` silences every panned
+        source under Web Audio (M5).** The spatialization dump was
+        conclusive. In-gameplay sound effects showed
+        `state=AL_PLAYING`, real data (`bufLengths=[2044,4096,4096,4096]`),
+        buffers genuinely scheduled (`audioQueue=2`), healthy gain-node
+        values (`0.168`, `0.253`) -- and this:
+        `refDistance=0 rolloff=0 distance=1.00 distanceModel=inverse`.
+      - Web Audio's inverse distance model is
+        `refDistance / (refDistance + rolloff * (distance - refDistance))`,
+        which with `refDistance = 0` and `rolloff = 0` is `0/0` = NaN --
+        silence, applied by the `PannerNode` *after* the gain node, so it
+        is invisible in every gain value logged in earlier rounds. Real
+        OpenAL tolerates this degenerate combination; Web Audio does not.
+        Confirmed by the one source that stayed audible: music (`src#3`)
+        printed no `spatial:` line at all, because it has no panner --
+        which is exactly why music worked while every sound effect was
+        silent, in both browsers.
+      - Same class of bug as the earlier `AL_MAX_DISTANCE = 0` crash, but
+        quieter: Web Audio *throws* on a non-positive `maxDistance`,
+        while a zero `refDistance` is accepted silently and just kills
+        the sound.
+      - Fixed in three places, all `#ifndef __EMSCRIPTEN__`-guarded or
+        clamped (native behavior unchanged):
+        `AudioPlayer::SetUpALSourceInit()` and
+        `SoundPlayer::SetUpALSourceInit()`'s 2D branch now skip the
+        `AL_REFERENCE_DISTANCE = 0` write entirely, leaving the
+        PannerNode default of 1 (which with `rolloff = 0` yields
+        `1/(1+0) = 1`, i.e. precisely the "no distance attenuation" the
+        code intends); `SoundPlayer::SetUpALSource3D()` clamps
+        `distance_reference` to a 1.0 floor, matching the existing
+        `distance_max` clamp, since both ramp up from 0 through
+        `ComputeVolumeForTransition()`.
+      - The 2D branch was the decisive one: `SetUpALSourceIdle()`'s 2D
+        path never rewrites the reference distance, so the 0 written at
+        init persisted for the source's entire life -- permanently
+        silencing menu clicks and most in-game effects.
+      - Compiles clean. **Not yet confirmed in a real browser.**
 - [x] **M6 — Save games / prefs persistence** -- superseded by M4i (IDBFS
       persistence) above, done as part of the save/load milestone rather
       than as a separate later pass.

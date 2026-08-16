@@ -180,19 +180,32 @@ bool AudioPlayer::SetUpALSourceInit() {
 	alSourcei(audio_source->source_id, AL_ROLLOFF_FACTOR, 0);
 	alSource3i(audio_source->source_id, AL_DIRECTION, 0, 0, 0);
 	alSourcei(audio_source->source_id, AL_DISTANCE_MODEL, AL_NONE);
-	alSourcei(audio_source->source_id, AL_REFERENCE_DISTANCE, 0);
-	// Web port (see ../../WEB_PORT_PLAN.md, M5): under Emscripten,
-	// AL_MAX_DISTANCE maps directly to a real Web Audio PannerNode's
-	// maxDistance property, and the Web Audio spec (unlike the OpenAL spec)
-	// requires it to be strictly positive -- setting it to 0 throws an
-	// uncaught RangeError ("maxDistance cannot be set to a non-positive
-	// value"), confirmed via a real-browser crash right after a menu-click
-	// UI sound tried to initialize. This player is never positional
-	// (AL_SOURCE_RELATIVE is TRUE above), so the actual numeric value is
-	// otherwise unused -- skip it under Emscripten and leave the
-	// PannerNode's own (safely positive) default instead of overwriting it
-	// with an invalid one.
+	// Web port (see ../../WEB_PORT_PLAN.md, M5): these three map onto a real
+	// Web Audio PannerNode, whose handling of degenerate distance values
+	// differs from OpenAL's -- and this was the "no sound effects at all"
+	// bug.
+	//
+	// AL_REFERENCE_DISTANCE=0 is accepted silently but is fatal: the
+	// PannerNode's inverse distance model computes
+	//   refDistance / (refDistance + rolloff * (distance - refDistance))
+	// which with refDistance 0 (and rolloff 0, set just above) is 0/0 --
+	// NaN, i.e. total silence, applied *after* the source's gain node.
+	// Confirmed in a real browser: sound effects showed AL_PLAYING, real
+	// buffer data, buffers scheduled into Web Audio, and healthy gains
+	// (0.17, 0.25), yet were inaudible -- while music, which has no panner
+	// at all, played fine. Leaving the PannerNode's default refDistance
+	// (1) gives gain = 1/(1 + 0*...) = 1, i.e. exactly the "no distance
+	// attenuation" this code wants.
+	//
+	// AL_MAX_DISTANCE=0 is worse still: Web Audio requires it strictly
+	// positive and throws an uncaught RangeError ("maxDistance cannot be
+	// set to a non-positive value").
+	//
+	// These players are never positional anyway (AL_SOURCE_RELATIVE is
+	// TRUE and the position is the origin), so the values are unused --
+	// skip all three and keep the safe defaults.
 #ifndef __EMSCRIPTEN__
+	alSourcei(audio_source->source_id, AL_REFERENCE_DISTANCE, 0);
 	alSourcei(audio_source->source_id, AL_MAX_DISTANCE, 0);
 	alSourcei(audio_source->source_id, AL_DIRECT_FILTER, AL_FILTER_NULL);
 #endif
