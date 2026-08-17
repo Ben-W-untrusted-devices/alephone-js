@@ -193,12 +193,20 @@ namespace {
 	bool a1_alpha_enabled = false;
 	GLuint a1_bound_program = 0;
 
+	// The shader renderer's three planes, in the order the injected GLSL packs
+	// them. 2/3/4 are RenderModelSetup()'s and deliberately unsupported.
+	const GLenum a1_clip_planes[3] = { GL_CLIP_PLANE0, GL_CLIP_PLANE1, GL_CLIP_PLANE5 };
+	float a1_clip_enabled[3] = { 0.0f, 0.0f, 0.0f };
+
 	// Locations are stable for the life of a linked program, and there are
 	// only ~22 of them, so cache rather than calling glGetUniformLocation --
 	// a synchronous JS round trip -- on every draw.
-	std::map<GLuint, GLint> a1_alpha_locations;
+	struct A1_ProgramUniforms { GLint alpha_ref; GLint clip_enabled; };
+	std::map<GLuint, A1_ProgramUniforms> a1_program_uniforms;
+
 	GLuint a1_pushed_program = 0;
 	float a1_pushed_ref = 0.0f;
+	float a1_pushed_clip[3] = { 0.0f, 0.0f, 0.0f };
 	bool a1_pushed_valid = false;
 
 	void a1_recompute_alpha_ref()
@@ -244,31 +252,67 @@ void A1_NoteProgramBound(GLuint program)
 	a1_bound_program = program;
 }
 
-void A1_ResetAlphaTestCache()
+void A1_SetClipPlaneEnabled(GLenum cap, bool enabled)
 {
-	a1_alpha_locations.clear();
+	for (int i = 0; i < 3; ++i)
+	{
+		if (a1_clip_planes[i] == cap)
+		{
+			a1_clip_enabled[i] = enabled ? 1.0f : 0.0f;
+			return;
+		}
+	}
+	// GL_CLIP_PLANE2/3/4: only RenderModelSetup() uses these, and 3D models
+	// are out of scope for the web port. Say so once rather than clipping
+	// wrongly and leaving it to be spotted by eye.
+	if (enabled)
+	{
+		static bool warned = false;
+		if (!warned)
+		{
+			warned = true;
+			logWarning("clip plane 0x%x is not emulated on the web port; not clipping", cap);
+		}
+	}
+}
+
+void A1_ResetEmulatedFixedFunctionCache()
+{
+	a1_program_uniforms.clear();
 	a1_pushed_valid = false;
 }
 
-void A1_PushAlphaTestUniform()
+void A1_PushEmulatedFixedFunction()
 {
 	// No program bound means the emulation's own fixed-function shader is
-	// drawing, and it applies the alpha test itself.
+	// drawing, and it applies both of these itself.
 	if (!a1_bound_program) return;
-	if (a1_pushed_valid && a1_pushed_program == a1_bound_program && a1_pushed_ref == a1_alpha_ref) return;
-
-	auto found = a1_alpha_locations.find(a1_bound_program);
-	if (found == a1_alpha_locations.end())
+	if (a1_pushed_valid && a1_pushed_program == a1_bound_program &&
+	    a1_pushed_ref == a1_alpha_ref &&
+	    a1_pushed_clip[0] == a1_clip_enabled[0] &&
+	    a1_pushed_clip[1] == a1_clip_enabled[1] &&
+	    a1_pushed_clip[2] == a1_clip_enabled[2])
 	{
-		found = a1_alpha_locations.emplace(
-			a1_bound_program,
-			glGetUniformLocation(a1_bound_program, A1_ALPHA_TEST_UNIFORM)).first;
+		return;
 	}
-	if (found->second >= 0)
-		glUniform1f(found->second, a1_alpha_ref);
+
+	auto found = a1_program_uniforms.find(a1_bound_program);
+	if (found == a1_program_uniforms.end())
+	{
+		A1_ProgramUniforms locations = {
+			glGetUniformLocation(a1_bound_program, A1_ALPHA_TEST_UNIFORM),
+			glGetUniformLocation(a1_bound_program, A1_CLIP_ENABLED_UNIFORM)
+		};
+		found = a1_program_uniforms.emplace(a1_bound_program, locations).first;
+	}
+	if (found->second.alpha_ref >= 0)
+		glUniform1f(found->second.alpha_ref, a1_alpha_ref);
+	if (found->second.clip_enabled >= 0)
+		glUniform3f(found->second.clip_enabled, a1_clip_enabled[0], a1_clip_enabled[1], a1_clip_enabled[2]);
 
 	a1_pushed_program = a1_bound_program;
 	a1_pushed_ref = a1_alpha_ref;
+	for (int i = 0; i < 3; ++i) a1_pushed_clip[i] = a1_clip_enabled[i];
 	a1_pushed_valid = true;
 }
 
@@ -324,6 +368,28 @@ mat4 a1_ModelViewInverse() {
 	               c0.z, c1.z, c2.z) / det;
 	vec3 t = -(ai * gl_ModelViewMatrix[3].xyz);
 	return mat4(vec4(ai[0], 0.0), vec4(ai[1], 0.0), vec4(ai[2], 0.0), vec4(t, 1.0));
+}
+)";
+
+// Injected into every vertex shader. The emulation transforms each plane into
+// eye space when glClipPlane is called, so the test is the same dot product
+// its own generated shader uses.
+//
+// Scaled down only to keep the interpolated value inside a fragment shader's
+// mediump range: Marathon world coordinates reach ~32768, past mediump's
+// 16384 limit, and the emulation injects `precision mediump float` into
+// fragment shaders. Only the sign is ever read, and scaling by a positive
+// constant commutes with linear interpolation, so this changes nothing else.
+static const char* const a1_clip_helper = R"(
+uniform vec4 u_clipPlaneEquation0;
+uniform vec4 u_clipPlaneEquation1;
+uniform vec4 u_clipPlaneEquation5;
+varying vec3 a1_clipDist;
+vec3 a1_ClipDistances() {
+	vec4 ec = gl_ModelViewMatrix * gl_Vertex;
+	return vec3(dot(ec, u_clipPlaneEquation0),
+	            dot(ec, u_clipPlaneEquation1),
+	            dot(ec, u_clipPlaneEquation5)) / 1024.0;
 }
 )";
 #endif
@@ -383,6 +449,22 @@ GLhandleARB parseShader(const GLcharARB* str, GLenum shaderType) {
 		source.push_back(a1_matrix_helpers);
 	}
 
+	// Clip planes (see OGL_Emscripten_Compat.h). Hang the computation off the
+	// shader's single `gl_Position = ...;` write rather than trying to find
+	// the end of main(). wall.vert adjusts gl_Position.z on the next line,
+	// which is unaffected -- the clip distances do not depend on it.
+	if (shaderType == GL_VERTEX_SHADER_ARB)
+	{
+		const std::string::size_type pos_at = body.find("gl_Position");
+		const std::string::size_type eq = (pos_at == std::string::npos) ? std::string::npos : body.find('=', pos_at);
+		const std::string::size_type end = (eq == std::string::npos) ? std::string::npos : body.find(';', eq);
+		if (end != std::string::npos)
+		{
+			body.insert(end + 1, "\n\t" A1_CLIP_DISTANCE_VARYING " = a1_ClipDistances();");
+			source.push_back(a1_clip_helper);
+		}
+	}
+
 	// Alpha test (see OGL_Emscripten_Compat.h): WebGL can only drop a fragment
 	// with `discard`, so turn the shader's single `gl_FragColor = <expr>;`
 	// into a test followed by the assignment. Every fragment shader in the
@@ -402,11 +484,18 @@ GLhandleARB parseShader(const GLcharARB* str, GLenum shaderType) {
 		if (end != std::string::npos)
 		{
 			const std::string expr = body.substr(eq + 1, end - eq - 1);
+			// A disabled plane multiplies to exactly 0.0, which is not < 0.0,
+			// so the mask alone expresses "off" -- the emulation uploads
+			// equations for disabled planes too, and they must be ignored.
 			body.replace(write_at, end + 1 - write_at,
-			             "{ vec4 a1_c =" + expr + ";"
+			             "{ if (any(lessThan(" A1_CLIP_DISTANCE_VARYING " * " A1_CLIP_ENABLED_UNIFORM
+			             ", vec3(0.0)))) discard;"
+			             " vec4 a1_c =" + expr + ";"
 			             " if (a1_c.a <= " A1_ALPHA_TEST_UNIFORM ") discard;"
 			             " gl_FragColor = a1_c; }");
-			source.push_back("uniform float " A1_ALPHA_TEST_UNIFORM ";\n");
+			source.push_back("uniform float " A1_ALPHA_TEST_UNIFORM ";\n"
+			                 "uniform vec3 " A1_CLIP_ENABLED_UNIFORM ";\n"
+			                 "varying vec3 " A1_CLIP_DISTANCE_VARYING ";\n");
 		}
 	}
 
@@ -457,9 +546,10 @@ void Shader::unloadAll() {
 		_shaders[i].unload();
 	}
 #ifdef __EMSCRIPTEN__
-	// Web port: the alpha-test uniform locations are keyed by program name, and
-	// GL is free to hand the same name back out after these are deleted.
-	A1_ResetAlphaTestCache();
+	// Web port: the emulated fixed-function uniform locations are keyed by
+	// program name, and GL is free to hand the same name back out after these
+	// are deleted.
+	A1_ResetEmulatedFixedFunctionCache();
 #endif
 }
 

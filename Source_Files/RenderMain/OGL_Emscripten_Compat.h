@@ -383,22 +383,61 @@ static inline void A1_glPopAttrib(void)
 // "alpha test disabled" is expressed -- no second uniform needed.
 #define A1_ALPHA_TEST_DISABLED (-1.0f)
 
+// --- User clip planes ---------------------------------------------------
+//
+// GLES has no fixed-function clipping either, and `gl_ClipVertex` -- the
+// built-in that fed it -- does not exist in GLSL ES, which is why the port
+// defines DISABLE_CLIP_VERTEX unconditionally. So this engine's clipping was
+// simply absent on the web.
+//
+// It matters more than it sounds. The shader renderer clips with three
+// planes, and each one is load-bearing:
+//
+//   GL_CLIP_PLANE0/1  the portal window's left and right edges
+//                     (RenderRasterize_Shader::clip_to_window)
+//   GL_CLIP_PLANE5    the media boundary, which render_node_object() uses to
+//                     draw sprites above and below a liquid surface in
+//                     separate passes, exactly as the software renderer does
+//
+// Without them, sprites are drawn unclipped by the portal they are seen
+// through -- so corpses in the next room paint over the wall in front of
+// them -- and a sprite underwater is not split at the surface, so it draws
+// over the water instead of under it.
+//
+// The emulation is more help here than it was for the alpha test: it
+// implements glClipPlane fully, including the inverse-transpose-modelview
+// transform into eye space that GL specifies, and it uploads
+// `u_clipPlaneEquationN` to whatever program is bound. It just never had a
+// program that declared them. parseShader() now declares them and does the
+// comparison, so all this side has to supply is which planes are *enabled* --
+// the emulation uploads equations for disabled planes too.
+//
+// Only 0, 1 and 5 are carried, because those are the only ones the shader
+// renderer uses; 2, 3 and 4 belong to RenderModelSetup(), and 3D models are
+// out of scope (stock Marathon 2 has none). Enabling one of those logs once
+// rather than clipping wrongly and leaving it to be discovered by eye.
+#define A1_CLIP_ENABLED_UNIFORM "a1_clipEnabled"
+#define A1_CLIP_DISTANCE_VARYING "a1_clipDist"
+
 void A1_SetAlphaTestEnabled(bool enabled);
 void A1_SetAlphaTestFunc(GLenum func, GLclampf ref);
+void A1_SetClipPlaneEnabled(GLenum cap, bool enabled);
 void A1_NoteProgramBound(GLuint program);
-void A1_PushAlphaTestUniform();
-void A1_ResetAlphaTestCache();
+void A1_PushEmulatedFixedFunction();
+void A1_ResetEmulatedFixedFunctionCache();
 
 // Defined before the macros below, so these still reach the real entry points.
 inline void A1_glEnableWrap(GLenum cap)
 {
 	if (cap == GL_ALPHA_TEST) A1_SetAlphaTestEnabled(true);
+	else if (cap >= GL_CLIP_PLANE0 && cap <= GL_CLIP_PLANE5) A1_SetClipPlaneEnabled(cap, true);
 	glEnable(cap);
 }
 
 inline void A1_glDisableWrap(GLenum cap)
 {
 	if (cap == GL_ALPHA_TEST) A1_SetAlphaTestEnabled(false);
+	else if (cap >= GL_CLIP_PLANE0 && cap <= GL_CLIP_PLANE5) A1_SetClipPlaneEnabled(cap, false);
 	glDisable(cap);
 }
 
@@ -410,7 +449,7 @@ inline void A1_glUseProgramWrap(GLuint program)
 
 inline void A1_glDrawArraysWrap(GLenum mode, GLint first, GLsizei count)
 {
-	A1_PushAlphaTestUniform();
+	A1_PushEmulatedFixedFunction();
 	glDrawArrays(mode, first, count);
 }
 

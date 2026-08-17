@@ -140,6 +140,33 @@ describe("legacy GLSL rewriting for the WebGL 1.0 build", () => {
     expect(rewritten.split("{").length).toBe(rewritten.split("}").length);
   });
 
+  // GLES has no fixed-function clipping, so parseShader() adds a varying that
+  // carries the eye-space clip distances from the vertex shader and discards
+  // on them in the fragment shader. That costs a varying slot, and WebGL 1.0
+  // only *guarantees* 8 -- so the budget is worth pinning rather than
+  // discovering on a minimum-spec device.
+  const VARYING_SLOTS_GUARANTEED = 8;
+
+  it.each(shaders.filter((s) => s.isVertex))("$name has one gl_Position write to hang clipping off", ({ source }) => {
+    const at = source.indexOf("gl_Position");
+    expect(at).toBeGreaterThanOrEqual(0);
+    const end = source.indexOf(";", source.indexOf("=", at));
+    expect(end).toBeGreaterThan(at);
+    // The first mention must be the write itself, not a later read such as
+    // wall.vert's `gl_Position.z = gl_Position.z + ...` adjustment.
+    expect(source.slice(at, end)).not.toContain("gl_Position.z");
+  });
+
+  it.each(shaders.filter((s) => s.isVertex))("$name stays within the varying budget", ({ source }) => {
+    const own = new Set(
+      [...source.matchAll(/^\s*varying\s+\w+\s+(\w+)/gm)].map((m) => m[1]),
+    );
+    // The emulation adds one varying per gl_TexCoord[N] the shader writes,
+    // and parseShader() adds the clip-distance one.
+    const emulationAdded = new Set([...source.matchAll(/gl_TexCoord\[(\d)\]/g)].map((m) => m[1])).size;
+    expect(own.size + emulationAdded + 1).toBeLessThanOrEqual(VARYING_SLOTS_GUARANTEED);
+  });
+
   it("still detects the gaps if the engine's rewrite is skipped", () => {
     // Without applyEnginePass this must fail loudly -- otherwise the test above
     // proves nothing and would keep passing if parseShader() lost its rewrites.

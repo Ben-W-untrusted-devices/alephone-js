@@ -3019,6 +3019,47 @@ overflow, the alSourcei parameter-whitelist trap, `AL_MAX_DISTANCE`/
         output (self-contained expression, balanced braces, discard present),
         so a future shader that breaks the assumption fails a test instead of
         a frame.
+  - [x] **Stage 5d — user clip planes.** With sprites drawing correctly, what
+        was left was sprites drawing where they should have been hidden:
+        corpses in the next room painted over the wall in front of them, and
+        an object underwater drew over the water rather than under it.
+      - Both are the same missing feature. GLES has no fixed-function
+        clipping, and `gl_ClipVertex` -- the built-in that fed it -- does not
+        exist in GLSL ES, which is exactly why the port defines
+        `DISABLE_CLIP_VERTEX` unconditionally. So the engine's clipping was
+        simply absent, and it turns out to be load-bearing in three places:
+        - `GL_CLIP_PLANE0/1` are the portal window's left and right edges
+          (`clip_to_window`), applied to walls, floors and sprites alike.
+          Geometry mostly survived losing them because the renderer already
+          draws in sorted order with depth; sprites did not.
+        - `GL_CLIP_PLANE5` is the media boundary, which `render_node_object()`
+          uses to draw sprites above and below a liquid surface in separate
+          passes -- "just like the original software renderer", as the comment
+          there says. Without it neither pass is cut at the surface, so the
+          whole sprite lands in front of the water.
+      - The emulation helps more here than it did for the alpha test: it
+        implements `glClipPlane` fully, *including* the inverse-transpose-
+        modelview transform into eye space that GL specifies, and it uploads
+        `u_clipPlaneEquationN` to whatever program is bound. It simply never
+        had a program that declared them. So `parseShader()` now declares them
+        and does the comparison, hanging the vertex-shader half off each
+        shader's single `gl_Position` write, and the C++ side supplies only
+        which planes are *enabled* -- necessary because the emulation uploads
+        equations for disabled planes too. A disabled plane multiplies to
+        exactly 0.0, which is not < 0.0, so that mask alone expresses "off".
+      - Only planes 0, 1 and 5 are carried. 2, 3 and 4 belong to
+        `RenderModelSetup()`, and 3D models are out of scope (stock Marathon 2
+        has none); enabling one logs once rather than clipping wrongly and
+        leaving it to be found by eye.
+      - The distances are scaled by 1/1024 purely for precision headroom:
+        Marathon world coordinates reach ~32768, past mediump's 16384 limit,
+        and the emulation injects `precision mediump float` into fragment
+        shaders. Only the sign is ever read, and scaling by a positive
+        constant commutes with linear interpolation, so nothing else changes.
+      - This costs one varying slot, and WebGL 1.0 only *guarantees* eight.
+        The worst case is `landscape_sphere.vert` at seven, so there is one
+        slot spare -- now asserted in the test suite, since running out would
+        otherwise show up only on a minimum-spec device.
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)
 
 ## Status
