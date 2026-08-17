@@ -671,6 +671,66 @@ bool setupGlow(struct view_data *view, std::unique_ptr<TextureManager>& TMgr, fl
 	return false;
 }
 
+#ifdef __EMSCRIPTEN__
+// Web port (see ../../WEB_PORT_PLAN.md, M6b): glNormal3f and
+// glMultiTexCoord4fARB set a *current* value in fixed-function GL, applying to
+// every vertex drawn afterwards -- which is how both surface renderers below
+// hand the shaders one constant normal and tangent per polygon.
+//
+// Emscripten's emulation only implements those two inside glBegin/glEnd, and
+// asserts otherwise. This engine has no glBegin anywhere (it was already on
+// vertex arrays before the port started), so the very first world draw tripped
+// that assert -- the unexplained "Aborted(Assertion failed)" on the first run
+// with a working framebuffer, thrown from JS rather than from our own code,
+// which is why it carried no file or line.
+//
+// The emulation's client-array path does read normals and tangents, so
+// replicate the constant across the polygon's vertices and pass real arrays
+// instead. Identical values reach the shader; only the delivery differs.
+//
+// Getting this right matters more than it looks: wall.vert normalizes both
+// vectors to build its TBN matrix, so leaving them at WebGL's (0,0,0) default
+// would make normalize() divide by zero and push NaN through viewDir into
+// wall.frag's fog term -- flooding the screen with fog colour rather than
+// failing visibly.
+static void A1_SetConstantNormalTangent(int vertex_count, const vec3& N, const vec3& T, float sign)
+{
+	static GLfloat normal_array[MAXIMUM_VERTICES_PER_POLYGON * 3];
+	static GLfloat tangent_array[MAXIMUM_VERTICES_PER_POLYGON * 4];
+
+	if (vertex_count > MAXIMUM_VERTICES_PER_POLYGON)
+		vertex_count = MAXIMUM_VERTICES_PER_POLYGON;
+
+	for (int i = 0; i < vertex_count; ++i)
+	{
+		normal_array[i * 3 + 0] = N[0];
+		normal_array[i * 3 + 1] = N[1];
+		normal_array[i * 3 + 2] = N[2];
+		tangent_array[i * 4 + 0] = T[0];
+		tangent_array[i * 4 + 1] = T[1];
+		tangent_array[i * 4 + 2] = T[2];
+		tangent_array[i * 4 + 3] = sign;
+	}
+
+	glEnableClientState(GL_NORMAL_ARRAY);
+	glNormalPointer(GL_FLOAT, 0, normal_array);
+
+	glClientActiveTextureARB(GL_TEXTURE1_ARB);
+	glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+	glTexCoordPointer(4, GL_FLOAT, 0, tangent_array);
+	// Back to unit 0, so the caller's own glTexCoordPointer still lands there.
+	glClientActiveTextureARB(GL_TEXTURE0_ARB);
+}
+
+static void A1_ClearConstantNormalTangent()
+{
+	glDisableClientState(GL_NORMAL_ARRAY);
+	glClientActiveTextureARB(GL_TEXTURE1_ARB);
+	glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+	glClientActiveTextureARB(GL_TEXTURE0_ARB);
+}
+#endif
+
 void RenderRasterize_Shader::render_node_floor_or_ceiling(clipping_window_data *window,
 	polygon_data *polygon, horizontal_surface_data *surface, bool void_present, bool ceil, RenderStep renderStep) {
 
@@ -720,8 +780,12 @@ void RenderRasterize_Shader::render_node_floor_or_ceiling(clipping_window_data *
 			T = vec3(0,1,0);
 			sign = -1;
 		}
+#ifdef __EMSCRIPTEN__
+		A1_SetConstantNormalTangent(vertex_count, N, T, sign);
+#else
 		glNormal3f(N[0], N[1], N[2]);
 		glMultiTexCoord4fARB(GL_TEXTURE1_ARB, T[0], T[1], T[2], sign);
+#endif
 
 		GLfloat vertex_array[MAXIMUM_VERTICES_PER_POLYGON * 3];
 		GLfloat texcoord_array[MAXIMUM_VERTICES_PER_POLYGON * 2];
@@ -775,6 +839,9 @@ void RenderRasterize_Shader::render_node_floor_or_ceiling(clipping_window_data *
 			glDrawArrays(GL_POLYGON, 0, vertex_count);
 		}
 
+#ifdef __EMSCRIPTEN__
+		A1_ClearConstantNormalTangent();
+#endif
 		Shader::disable();
 		glMatrixMode(GL_TEXTURE);
 		glLoadIdentity();
@@ -866,8 +933,12 @@ void RenderRasterize_Shader::render_node_side(clipping_window_data *window, vert
 			vec3 N(-dy, dx, 0);
 			vec3 T(dx, dy, 0);
 			float sign = 1;
+#ifdef __EMSCRIPTEN__
+			A1_SetConstantNormalTangent(vertex_count, N, T, sign);
+#else
 			glNormal3f(N[0], N[1], N[2]);
 			glMultiTexCoord4fARB(GL_TEXTURE1_ARB, T[0], T[1], T[2], sign);
+#endif
 
 			world_distance x = 0.0, y = 0.0;
 			instantiate_transfer_mode(view, surface->transfer_mode, x, y);
@@ -900,6 +971,9 @@ void RenderRasterize_Shader::render_node_side(clipping_window_data *window, vert
 				glDrawArrays(GL_QUADS, 0, vertex_count);
 			}
 
+#ifdef __EMSCRIPTEN__
+			A1_ClearConstantNormalTangent();
+#endif
 			Shader::disable();
 			glMatrixMode(GL_TEXTURE);
 			glLoadIdentity();

@@ -78,24 +78,6 @@
       log(`[heartbeat ${heartbeatCount}] page is still responsive, ${new Date().toISOString()}`);
     }, 3000);
 
-    // Raw DOM-level input logging on the canvas itself, independent of
-    // whatever SDL2/Emscripten's own handlers do with these events -- this
-    // tells us whether browser events reach the canvas element at all, and
-    // exactly where they land relative to it (see the CSS-size mismatch
-    // theory in the comment on #canvas above).
-    function logCanvasEvent(event) {
-      const canvas = document.getElementById("canvas");
-      const rect = canvas.getBoundingClientRect();
-      log(
-        `[canvas ${event.type}] client=(${event.clientX},${event.clientY})`,
-        `canvasRect=(${rect.left.toFixed(0)},${rect.top.toFixed(0)},${rect.width.toFixed(0)}x${rect.height.toFixed(0)})`,
-        `canvasAttr=(${canvas.width}x${canvas.height})`
-      );
-    }
-    for (const type of ["mousedown", "mouseup", "click"]) {
-      document.getElementById("canvas").addEventListener(type, logCanvasEvent);
-    }
-
     let currentFiles = [];
     const startButton = document.getElementById("start-button");
 

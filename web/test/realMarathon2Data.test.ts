@@ -29,8 +29,14 @@ describe.skipIf(!existsSync(dataDir))("real Marathon 2 data", () => {
     );
   });
 
+  it("recognizes the folder's music, which is loadable but not scenario data", () => {
+    // Music.ogg used to be expected to come back unrecognized. It became a
+    // known type deliberately, once music playback landed (WEB_PORT_PLAN.md,
+    // M5) -- it isn't scenario data, but it does need to reach the engine.
+    expect(recognizeFileType("Music.ogg")?.label).toBe("Music");
+  });
+
   it("does not misclassify the folder's non-scenario entries", () => {
-    expect(recognizeFileType("Music.ogg")).toBeUndefined();
     expect(recognizeFileType("Readme.md")).toBeUndefined();
   });
 });

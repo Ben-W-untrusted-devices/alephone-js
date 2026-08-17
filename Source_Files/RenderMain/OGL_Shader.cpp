@@ -181,6 +181,63 @@ void parseFile(FileSpecifier& fileSpec, std::string& s) {
 }
 
 
+#ifdef __EMSCRIPTEN__
+// Web port (see ../../WEB_PORT_PLAN.md, M6b): Emscripten's legacy-GL GLSL
+// rewriter (libglemu.js) turns the legacy built-ins these shaders use into
+// uniforms and attributes that it then feeds itself. Three of the ones this
+// engine needs come out broken, all for the same underlying reason -- the
+// rewriter is a list of plain substring regexes over the source text, with no
+// lexer, so longer built-in names get eaten by the rules for shorter ones:
+//
+//   - `gl_ModelViewMatrixInverse` is matched by the `gl_ModelViewMatrix`
+//     rule, and becomes the never-declared `u_modelViewInverse`.
+//   - `gl_NormalMatrix` is matched by the `gl_Normal` rule, and becomes the
+//     never-declared `a_normalMatrix`.
+//   - `gl_Fog.start` has no rule at all (there are rules for .color, .end,
+//     .scale and .density), so `gl_Fog` survives undeclared.
+//
+// Between them these failed every shader in the engine, which is why the
+// first in-browser run compiled none of them. Rewrite them here, before the
+// emulation gets to see them.
+static void a1_replace_all(std::string& s, const std::string& from, const std::string& to)
+{
+	for (std::string::size_type at = s.find(from); at != std::string::npos; at = s.find(from, at + to.size()))
+		s.replace(at, from.size(), to);
+}
+
+// Both matrices are derived from `gl_ModelViewMatrix`, which the emulation
+// does supply correctly, by inverting its 3x3 part in the shader. Deriving
+// beats declaring: the emulation has its own `u_normalMatrix`, but only
+// uploads it when GL_LIGHTING is enabled, and this engine never enables it --
+// so declaring that would compile and then silently hand every shader a zero
+// matrix. GLSL ES 1.00 has no `inverse()`, hence the explicit adjugate over
+// determinant. This is exact for any invertible modelview, including the
+// scaled ones the model renderer sets up, rather than assuming a rigid
+// transform.
+static const char* const a1_matrix_helpers = R"(
+mat3 a1_NormalMatrix() {
+	vec3 c0 = cross(gl_ModelViewMatrix[1].xyz, gl_ModelViewMatrix[2].xyz);
+	vec3 c1 = cross(gl_ModelViewMatrix[2].xyz, gl_ModelViewMatrix[0].xyz);
+	vec3 c2 = cross(gl_ModelViewMatrix[0].xyz, gl_ModelViewMatrix[1].xyz);
+	float det = dot(gl_ModelViewMatrix[0].xyz, c0);
+	/* transpose(inverse(A)) has the cofactor vectors as its columns */
+	return mat3(c0, c1, c2) / det;
+}
+mat4 a1_ModelViewInverse() {
+	vec3 c0 = cross(gl_ModelViewMatrix[1].xyz, gl_ModelViewMatrix[2].xyz);
+	vec3 c1 = cross(gl_ModelViewMatrix[2].xyz, gl_ModelViewMatrix[0].xyz);
+	vec3 c2 = cross(gl_ModelViewMatrix[0].xyz, gl_ModelViewMatrix[1].xyz);
+	float det = dot(gl_ModelViewMatrix[0].xyz, c0);
+	/* inverse(A) has them as its rows instead */
+	mat3 ai = mat3(c0.x, c1.x, c2.x,
+	               c0.y, c1.y, c2.y,
+	               c0.z, c1.z, c2.z) / det;
+	vec3 t = -(ai * gl_ModelViewMatrix[3].xyz);
+	return mat4(vec4(ai[0], 0.0), vec4(ai[1], 0.0), vec4(ai[2], 0.0), vec4(t, 1.0));
+}
+)";
+#endif
+
 GLhandleARB parseShader(const GLcharARB* str, GLenum shaderType) {
 
 	GLint status;
@@ -215,7 +272,30 @@ GLhandleARB parseShader(const GLcharARB* str, GLenum shaderType) {
 	{
 		source.push_back("#define BLOOM_SRGB_FRAMEBUFFER\n");
 	}
+#ifdef __EMSCRIPTEN__
+	// Order matters here for exactly the prefix reason that breaks the
+	// emulation: the longer names have to be rewritten first, or the shorter
+	// rules below would eat them in turn.
+	std::string body(str);
+	a1_replace_all(body, "gl_ModelViewMatrixInverse", "a1_ModelViewInverse()");
+	a1_replace_all(body, "gl_NormalMatrix", "a1_NormalMatrix()");
+	// `start` is recoverable exactly from two fields the emulation *does*
+	// provide, since it defines u_fogScale as 1/(end - start). Written in the
+	// gl_Fog spelling so the emulation's own rules still declare and upload
+	// both, which means no new uniform has to be plumbed through from C++.
+	a1_replace_all(body, "gl_Fog.start", "(gl_Fog.end - 1.0/gl_Fog.scale)");
+	// Only inject the helpers where they are actually used -- they reference
+	// gl_ModelViewMatrix, which the emulation only rewrites in vertex shaders,
+	// so injecting them unconditionally would break every fragment shader.
+	if (body.find("a1_ModelViewInverse()") != std::string::npos ||
+	    body.find("a1_NormalMatrix()") != std::string::npos)
+	{
+		source.push_back(a1_matrix_helpers);
+	}
+	source.push_back(body.c_str());
+#else
 	source.push_back(str);
+#endif
 
 	glShaderSourceARB(shader, source.size(), &source[0], NULL);
 

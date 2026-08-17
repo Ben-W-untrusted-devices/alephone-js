@@ -2909,6 +2909,64 @@ overflow, the alSourcei parameter-whitelist trap, `AL_MAX_DISTANCE`/
         `[load_game_from_file]` traces. The `[begin_game]`/`[start_game]`
         markers stay for now -- they fire once per game start, not per
         frame, and they are what localized this crash.
+  - [x] **Stage 5b — the emulation's GLSL rewriter, and an assert from JS.**
+        With the framebuffer fixed the run got further, and produced two new
+        failures -- neither of them in engine logic.
+      - **14 of the 22 shaders failed to compile.** Emscripten's legacy-GL
+        emulation rewrites legacy GLSL built-ins into uniforms and attributes
+        it feeds itself, but its rewriter is a list of plain substring regexes
+        with no lexer, so longer built-in names get eaten by the rules for
+        shorter ones:
+        - `gl_ModelViewMatrixInverse` is matched by the `gl_ModelViewMatrix`
+          rule, becoming the never-declared `u_modelViewInverse`.
+        - `gl_NormalMatrix` is matched by the `gl_Normal` rule, becoming the
+          never-declared `a_normalMatrix`.
+        - `gl_Fog.start` has no rule at all (there are rules for `.color`,
+          `.end`, `.scale` and `.density`), so `gl_Fog` survives undeclared.
+        Those three identifiers are exactly what the browser reported.
+        `parseShader()` now rewrites them before the emulation sees them,
+        longest name first for the same prefix reason.
+      - **Fog needed no new plumbing.** `start` is recoverable exactly from
+        two fields the emulation does provide, since it defines `u_fogScale`
+        as `1/(end - start)`. Writing the substitution in the `gl_Fog`
+        spelling means the emulation's own rules still declare and upload
+        both, so no uniform has to be threaded through from C++.
+      - **The two matrices are derived, not declared.** The emulation has its
+        own `u_normalMatrix` but only uploads it when `GL_LIGHTING` is on --
+        which this engine never enables -- so declaring it would have compiled
+        and then silently handed every shader a zero matrix. Both are instead
+        computed in-shader from `gl_ModelViewMatrix`, which the emulation does
+        supply correctly, by inverting its 3x3 part. GLSL ES 1.00 has no
+        `inverse()`, so this is the explicit adjugate over determinant; it is
+        exact for any invertible modelview rather than assuming a rigid
+        transform, which matters because the model renderer sets up scaled
+        ones.
+      - **`Aborted(Assertion failed)` came from JS, not from us** -- hence no
+        file or line. `glNormal3f`/`glMultiTexCoord4fARB` set a *current*
+        value in fixed-function GL, which is how both surface renderers hand
+        the shaders one constant normal and tangent per polygon; the emulation
+        implements them only inside `glBegin`/`glEnd` and asserts otherwise.
+        This engine has no `glBegin` anywhere, so the first world draw tripped
+        it immediately. Both constants are now replicated across the polygon's
+        vertices and passed as real client arrays, which the emulation does
+        read. Identical values reach the shader; only the delivery differs.
+      - That one was worth doing properly rather than stubbing out:
+        `wall.vert` normalizes both vectors to build its TBN matrix, so
+        leaving them at WebGL's `(0,0,0)` default would divide by zero and
+        push NaN through `viewDir` into `wall.frag`'s fog term -- flooding the
+        screen with fog colour instead of failing visibly.
+      - **Verified without a GPU**, since each of these otherwise costs a
+        browser round-trip: the two matrix helpers were checked numerically
+        against a reference inverse over 2000 random invertible matrices (max
+        error ~1e-10, including the camera-origin use in `sprite.vert`), and
+        `web/test/legacyGlslRewrite.test.ts` replays both rewrite passes over
+        the real shader sources -- reproducing exactly the 14 failures seen in
+        the browser, then asserting none survive. It also fails deliberately
+        if the engine-side rewrite is ever dropped, so it cannot quietly stop
+        proving anything.
+      - Removed the `[canvas ...]` per-click DOM logging from `game.html`; the
+        coordinate mapping it was added to diagnose has been correct for
+        several milestones.
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)
 
 ## Status
