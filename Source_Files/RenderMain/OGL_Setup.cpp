@@ -152,7 +152,18 @@ void OGL_StartProgress(int total_progress)
 	if (!OGL_LoadScreen::instance()->Start())
 	{
 		OGL_ClearScreen();
+		// Web port (see ../../WEB_PORT_PLAN.md, M6b): open/draw/close_progress_dialog
+		// are all implemented in Network/network_dialogs.cpp, which is
+		// compiled out entirely under DISABLE_NETWORKING -- so referencing
+		// them fails to link in the web build even though nothing here is
+		// network-related. This is a pre-existing DISABLE_NETWORKING gap
+		// that only surfaces now that the GL sources are compiled. The
+		// effect of skipping it is cosmetic: no progress bar while textures
+		// preload (OGL_LoadScreen, used when a scenario supplies a loading
+		// screen, is unaffected and still takes the branch above).
+#ifndef DISABLE_NETWORKING
 		open_progress_dialog(_loading, true);
+#endif
 	}
 	show_ogl_progress = true;
 	last_update_tick = machine_tick_count();
@@ -168,8 +179,10 @@ void OGL_ProgressCallback(int delta_progress)
 		{
 			if (OGL_LoadScreen::instance()->Use())
 				OGL_LoadScreen::instance()->Progress(100 * ogl_progress / total_ogl_progress);
+#ifndef DISABLE_NETWORKING
 			else
 				draw_progress_bar(ogl_progress, total_ogl_progress);
+#endif
 			last_update_tick = current_ticks;
 		}
 	}
@@ -180,8 +193,10 @@ void OGL_StopProgress()
 	show_ogl_progress = false;
 	if (OGL_LoadScreen::instance()->Use())
 		OGL_LoadScreen::instance()->Stop();
+#ifndef DISABLE_NETWORKING
 	else
 		close_progress_dialog();
+#endif
 }
 #endif
 

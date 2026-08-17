@@ -316,7 +316,19 @@ AS_IF([test "x$enable_opengl" != "xno"],
                                      ,
                                      [$SYS_GL_LIBS])
                         LIBS="$LIBS $SYS_GL_LIBS"
-                        AC_CHECK_HEADERS([GL/glext.h], [], [], [#include <GL/gl.h>]) ]) ],
+                        AC_CHECK_HEADERS([GL/glext.h], [], [], [#include <GL/gl.h>]) ],
+                      dnl Web port (see WEB_PORT_PLAN.md, M6b): this engine is
+                      dnl a fixed-function/client-array renderer, so it needs
+                      dnl Emscripten's legacy GL emulation -- that is what
+                      dnl supplies the matrix stack, client vertex arrays,
+                      dnl alpha test, fog and texenv, and what rewrites the
+                      dnl legacy GLSL built-ins our shaders use. Set at
+                      dnl configure time rather than only in
+                      dnl web/build-engine.sh so automake's own link of the
+                      dnl alephone binary resolves too. GL_UNSAFE_OPTS=0 keeps
+                      dnl the emulation's correctness checks on while the
+                      dnl renderer is being brought up.
+                      [ LDFLAGS="$LDFLAGS -sLEGACY_GL_EMULATION=1 -sGL_UNSAFE_OPTS=0" ]) ],
               [ AS_IF([test "x$enable_opengl" = "xyes"],
                       [AC_MSG_ERROR([OpenGL support requested but not available])],
                       [AC_MSG_WARN([OpenGL not available])]) ]) ])

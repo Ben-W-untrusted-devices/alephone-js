@@ -123,6 +123,17 @@ bool OGL_DoFades(float Left, float Top, float Right, float Bottom)
 		
 		case _randomize_fader_type:
 			UseFlatStatic = TEST_FLAG(Get_OGL_ConfigureData().Flags,OGL_Flag_FlatStatic);
+#ifdef __EMSCRIPTEN__
+			// Web port (see ../../WEB_PORT_PLAN.md, M6b): the non-flat branch
+			// below draws the static effect with a colour logic op
+			// (glLogicOp(GL_XOR)), which GLES/WebGL has no equivalent for and
+			// which Emscripten's legacy GL emulation does not provide. Force
+			// the flat-static branch, which produces the same effect through
+			// ordinary blending -- a real visual approximation rather than a
+			// missing effect, and the same fallback the engine already offers
+			// natively via the OGL_Flag_FlatStatic preference.
+			UseFlatStatic = true;
+#endif
 			if (UseFlatStatic)
 			{
 				for (int c=0; c<3; c++)
@@ -130,7 +141,13 @@ bool OGL_DoFades(float Left, float Top, float Right, float Bottom)
 				FlatStaticColor[3] = PIN(int(65535*Fader.Color[3]+0.5),0,65535);
 				glDisable(GL_ALPHA_TEST);
 				glEnable(GL_BLEND);
-				glColor4usv(FlatStaticColor);
+				// Web port (see ../../WEB_PORT_PLAN.md, M6b): glColor4usv is
+				// not provided under Emscripten. SglColor4usv() is this
+				// engine's own wrapper for exactly this conversion (see
+				// OGL_Setup.cpp) and is already what the equivalent
+				// flat-static call site in OGL_Render.cpp uses, so this also
+				// makes the two consistent.
+				SglColor4usv(FlatStaticColor);
 				glDrawArrays(GL_POLYGON,0,4);
 			}
 			else
@@ -140,11 +157,19 @@ bool OGL_DoFades(float Left, float Top, float Right, float Bottom)
 				glDisable(GL_BLEND);
 				MultAlpha(Fader.Color,BlendColor);
 				glColor3fv(BlendColor);
+				// Web port (see ../../WEB_PORT_PLAN.md, M6b): unreachable
+				// under Emscripten (UseFlatStatic is forced above), but still
+				// compiled -- and glLogicOp/GL_COLOR_LOGIC_OP do not exist
+				// there, so the reference alone would fail the link.
+#ifndef __EMSCRIPTEN__
 				glEnable(GL_COLOR_LOGIC_OP);
 				glLogicOp(GL_XOR);
+#endif
 				glDrawArrays(GL_POLYGON,0,4);
 				// Revert to defaults
+#ifndef __EMSCRIPTEN__
 				glDisable(GL_COLOR_LOGIC_OP);
+#endif
 				glEnable(GL_BLEND);
 			}
 			break;

@@ -2709,6 +2709,89 @@ overflow, the alSourcei parameter-whitelist trap, `AL_MAX_DISTANCE`/
         `GL_DOUBLE` vertex data (8 sites, plus the two file-local
         `ExtendedVertexData` structs). These compile fine and will fail at
         runtime instead.
+  - [x] **Stage 2 — it links.** A GL-enabled `alephone.wasm` now builds end
+        to end: zero compile errors, zero undefined symbols, and a plain
+        `emmake make` (not just a hand-crafted relink) produces the binary.
+        Confirmed the legacy emulation is genuinely in the artifact, not
+        merely on the command line -- the output JS carries ~360
+        `GLImmediate`/`glemu` references.
+      - **Correction to the stage 1 write-up.** The claim there that the
+        emulation "resolves the entire ARB shader-object API" was wrong: it
+        came from a symbol list `wasm-ld` had truncated at its 22-error
+        limit. Fixing the visible errors simply exposed the next batch, four
+        times over. The honest lesson is that a truncated linker list is not
+        an inventory -- each round revealed more:
+        ARB shader objects (`glCreateShaderObjectARB`, `glUseProgramObjectARB`,
+        `glUniform*ARB`, ...), the ARB multitexture/compression aliases,
+        the EXT framebuffer family, and `glPushAttrib`/`glPopAttrib`. So a
+        compatibility shim *was* needed after all.
+      - `Source_Files/RenderMain/OGL_Emscripten_Compat.h` (new, included
+        from `OGL_Headers.h`) now carries it. Almost all of it is exact
+        renames -- ARB shader objects to core GL2, ARB multitexture to
+        `glActiveTexture`/`glClientActiveTexture`/`glCompressedTexImage2D`,
+        EXT framebuffers to core -- helped by the ARB status enums sharing
+        their values with the core ones (`GL_OBJECT_COMPILE_STATUS_ARB ==
+        GL_COMPILE_STATUS`). Three needed real code:
+        - `glDeleteObjectARB`/`glGetObjectParameterivARB`/`glGetInfoLogARB`
+          take any object handle, where core GL splits the call by type.
+          Rather than edit call sites and diverge from native, they dispatch
+          on `glIsProgram()`, which answers exactly that question.
+        - `gluScaleImage` is implemented as a bilinear RGBA resample;
+          `gluBuild2DMipmaps` as `glTexImage2D` + `glGenerateMipmap`, which
+          is strictly better than GLU's CPU downsampling.
+        - `glPushAttrib`/`glPopAttrib` save and restore a fixed superset of
+          the state the engine actually perturbs (blend/depth/stencil/
+          scissor/cull/texture enables, depth mask, viewport, matrix mode,
+          blend func, current colour). The engine only ever pushes four
+          masks and re-establishes what it needs anyway, so over-restoring
+          is safe where under-restoring would leak state between passes.
+          Deliberately avoids round-tripping the emulated
+          `GL_ALPHA_TEST`/`GL_FOG`/`GL_LIGHTING` toggles through
+          `glIsEnabled`, which risks setting a GL error the engine's own
+          checks would misattribute.
+      - Handled outside the shim, where the reasoning belongs next to the
+        code:
+        - **Display lists.** `OGL_RenderText` used one purely as a cache,
+          replaying a single `GetOnScreenFont().OGL_Render(Text)` for the
+          drop shadow and foreground -- re-issuing the draw directly is
+          exactly equivalent. `FontHandler` was the real refactor: its
+          256-entry per-glyph list cache is replaced by a `GlyphDraws[]`
+          table holding the only values those lists baked in (the texture
+          rect and width), replayed directly in `OGL_Render()`.
+        - **`glPolygonStipple`.** Its guard, `USE_STIPPLE_STATIC_EFFECT`, is
+          defined locally in `OGL_Render.cpp`, and every use already has a
+          complete stencil-buffer `#else` -- and `glStencil*` is fully
+          available in GLES3. Leaving it undefined under Emscripten selects
+          a working path with no new code.
+        - **`glLogicOp`.** The static fader's XOR branch has no GLES
+          equivalent, but the engine already ships a flat-static
+          alternative behind the `OGL_Flag_FlatStatic` preference, so that
+          branch is forced here -- a real approximation rather than a
+          missing effect. `glColor4usv` in the same function became
+          `SglColor4usv()`, this engine's own wrapper for that conversion,
+          which also makes it consistent with the equivalent call site in
+          `OGL_Render.cpp`.
+        - **`glMultiTexCoord4fARB`** is a no-op: its two call sites push a
+          constant tangent for bump mapping, which is already unavailable
+          because the bump shader needs `gl_NormalMatrix` -- one of the two
+          legacy built-ins the emulation does not rewrite. Bump mapping
+          stays deferred as a unit.
+        - **A pre-existing `DISABLE_NETWORKING` gap**, surfaced only now
+          that GL compiles: `OGL_Setup.cpp`'s texture-preload progress bar
+          calls `open_progress_dialog`/`draw_progress_bar`/
+          `close_progress_dialog`, all implemented in
+          `Network/network_dialogs.cpp`, which is compiled out entirely.
+          Guarded; the effect is cosmetic (no progress bar while textures
+          preload, and `OGL_LoadScreen` is unaffected).
+      - `-sLEGACY_GL_EMULATION=1 -sGL_UNSAFE_OPTS=0` is set in `LDFLAGS` at
+        configure time rather than only in `web/build-engine.sh`, so
+        automake's own link of the `alephone` binary resolves too.
+      - Verified both configurations: `--enable-opengl` builds and links
+        clean, and the default (software) build is untouched and still
+        green. **Nothing has been run yet** -- linking is not rendering,
+        and the runtime work (stage 5, plus the `GL_QUADS`/`GL_POLYGON` and
+        `GL_DOUBLE` conversions that compile fine but will fail in WebGL) is
+        still ahead.
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)
 
 ## Status

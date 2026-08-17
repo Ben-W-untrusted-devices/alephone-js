@@ -29,7 +29,25 @@
 
 #ifdef HAVE_OPENGL
 
-#ifdef __WIN32__
+#ifdef __EMSCRIPTEN__
+
+// Web port (see ../../WEB_PORT_PLAN.md, M6b): Emscripten ships
+// desktop-style GL headers that declare the full legacy API, which is what
+// lets this engine's fixed-function code compile unchanged against
+// -sLEGACY_GL_EMULATION=1. Include those directly rather than going through
+// SDL_opengl.h, and pick up our shims for the few entry points the
+// emulation doesn't implement.
+#ifndef GL_GLEXT_PROTOTYPES
+#define GL_GLEXT_PROTOTYPES 1
+#endif
+
+#include <GL/gl.h>
+#include <GL/glext.h>
+#include <GL/glu.h>
+
+#include "OGL_Emscripten_Compat.h"
+
+#elif defined(__WIN32__)
 
 #define GLEW_STATIC 1
 #include <GL/glew.h>

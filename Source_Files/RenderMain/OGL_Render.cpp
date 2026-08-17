@@ -345,7 +345,16 @@ const double FullCircleReciprocal = 1/double(FULL_CIRCLE);
 
 
 // Number of static-effect rendering passes
+// Web port (see ../../WEB_PORT_PLAN.md, M6b): the stipple path needs
+// glPolygonStipple, which does not exist in GLES/WebGL and is one of the few
+// entry points Emscripten's legacy GL emulation does not provide. This file
+// already carries a complete stencil-buffer implementation of the same
+// static effect as the #else of every USE_STIPPLE_STATIC_EFFECT block, and
+// glStencil* is fully available in GLES3 -- so simply leaving this undefined
+// selects a working path rather than needing new code.
+#ifndef __EMSCRIPTEN__
 #define USE_STIPPLE_STATIC_EFFECT
+#endif
 #ifdef USE_STIPPLE_STATIC_EFFECT
 // For stippling
 const int StaticEffectPasses = 4;
@@ -3031,12 +3040,28 @@ bool OGL_RenderText(short BaseX, short BaseY, const char *Text, unsigned char r,
 	
 	// Create display list for the current text string;
 	// use the "standard" text-font display list (display lists can be nested)
-	GLuint TextDisplayList;
+	// Web port (see ../../WEB_PORT_PLAN.md, M6b): display lists do not exist
+	// in GLES/WebGL and Emscripten's legacy GL emulation does not provide
+	// them. The list here is purely a cache -- it records one
+	// GetOnScreenFont().OGL_Render(Text) and replays it for the drop shadow
+	// and again for the foreground -- so re-issuing the draw directly is
+	// exactly equivalent, just uncached. DrawText() below keeps the two
+	// platforms' call sites identical.
+	GLuint TextDisplayList = 0;
+#ifndef __EMSCRIPTEN__
 	TextDisplayList = glGenLists(1);
 	glNewList(TextDisplayList,GL_COMPILE);
 	GetOnScreenFont().OGL_Render(Text);
 	glEndList();
-	
+#endif
+	auto DrawText = [&]() {
+#ifdef __EMSCRIPTEN__
+		GetOnScreenFont().OGL_Render(Text);
+#else
+		glCallList(TextDisplayList);
+#endif
+	};
+
 	// Place the text in the foreground of the display
 	SetProjectionType(Projection_Screen);
 	GLfloat Depth = 0;
@@ -3081,17 +3106,19 @@ bool OGL_RenderText(short BaseX, short BaseY, const char *Text, unsigned char r,
 	
 	glLoadIdentity();
 	glTranslatef(BaseX+1.0F,BaseY+1.0F,Depth);
-	glCallList(TextDisplayList);
-	
+	DrawText();
+
 	// Foreground
 	SglColor3f(r/255.0f,g/255.0f,b/255.0f);
 
 	glLoadIdentity();
 	glTranslatef(BaseX,BaseY,Depth);
-	glCallList(TextDisplayList);
-		
+	DrawText();
+
 	// Clean up
+#ifndef __EMSCRIPTEN__
 	glDeleteLists(TextDisplayList,1);
+#endif
 	glPopMatrix();
 	
 	return true;

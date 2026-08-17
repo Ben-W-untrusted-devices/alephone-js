@@ -173,7 +173,11 @@ void FontSpecifier::OGL_Reset(bool IsStarting)
 	if (!IsStarting && OGL_Texture)
 	{
 		glDeleteTextures(1,&TxtrID);
+		// Web port (see ../../WEB_PORT_PLAN.md, M6b): no display lists to
+		// free under Emscripten -- GlyphDraws[] is plain member storage.
+#ifndef __EMSCRIPTEN__
 		glDeleteLists(DispList,256);
+#endif
 		OGL_Deregister(this);
 	}
 
@@ -295,7 +299,12 @@ void FontSpecifier::OGL_Reset(bool IsStarting)
 	glEnableClientState(GL_TEXTURE_COORD_ARRAY);
 	
  	// Allocate and create display lists of rendering commands
+ 	// Web port (see ../../WEB_PORT_PLAN.md, M6b): display lists are
+ 	// unavailable under Emscripten -- record each glyph's parameters into
+ 	// GlyphDraws[] instead and let OGL_Render() issue the draws directly.
+#ifndef __EMSCRIPTEN__
  	DispList = glGenLists(256);
+#endif
  	GLfloat TWidNorm = GLfloat(1)/TxtrWidth;
  	GLfloat THtNorm = GLfloat(1)/TxtrHeight;
  	for (int k=0; k<=LastLine; k++)
@@ -311,20 +320,28 @@ void FontSpecifier::OGL_Reset(bool IsStarting)
  			GLfloat Left = TWidNorm*Pos;
  			GLfloat Right = TWidNorm*NewPos;
  			
+#ifdef __EMSCRIPTEN__
+ 			GlyphDraws[Which].Left = Left;
+ 			GlyphDraws[Which].Top = Top;
+ 			GlyphDraws[Which].Right = Right;
+ 			GlyphDraws[Which].Bottom = Bottom;
+ 			GlyphDraws[Which].Width = Width;
+#else
  			glNewList(DispList + Which, GL_COMPILE);
- 			
+
  			// Move to the current glyph's (padded) position
  			glTranslatef(-Pad,0,0);
- 			
+
  			// Draw the glyph rectangle
 			OGL_RenderTexturedRect(0, -ascent_p, Width, descent_p + ascent_p,
 								   Left, Top, Right, Bottom);
-			
+
 			// Move to the next glyph's position
 			glTranslated(Width-Pad,0,0);
-			
+
  			glEndList();
- 			
+#endif
+
  			// For next one
  			Pos = NewPos;
  			Which++;
@@ -355,13 +372,37 @@ void FontSpecifier::OGL_Render(const char *Text)
 
 	glBindTexture(GL_TEXTURE_2D,TxtrID);
 	
+#ifdef __EMSCRIPTEN__
+	// Web port (see ../../WEB_PORT_PLAN.md, M6b): the padded metrics the
+	// display lists baked in. These mirror OGL_Reset()'s locals of the same
+	// names -- Pad is a hardcoded 1 there, and Ascent/Descent are members --
+	// so if that padding ever changes, this must change with it.
+	const int Pad = 1;
+	const int ascent_p = Ascent + Pad;
+	const int descent_p = Descent + Pad;
+#endif
+
 	size_t Len = MIN(strlen(Text),255);
 	for (size_t k=0; k<Len; k++)
 	{
 		unsigned char c = Text[k];
+#ifdef __EMSCRIPTEN__
+		// Web port (see ../../WEB_PORT_PLAN.md, M6b): the same sequence the
+		// per-glyph display list recorded in OGL_Reset(), issued directly.
+		// Glyphs that were never populated keep Width 0 and are skipped,
+		// matching the no-op an empty display list ID would have been.
+		const GlyphDrawInfo& G = GlyphDraws[c];
+		if (G.Width <= 0) continue;
+
+		glTranslatef(-Pad,0,0);
+		OGL_RenderTexturedRect(0, -ascent_p, G.Width, descent_p + ascent_p,
+							   G.Left, G.Top, G.Right, G.Bottom);
+		glTranslated(G.Width-Pad,0,0);
+#else
 		glCallList(DispList+c);
+#endif
 	}
-	
+
 	glPopAttrib();
 }
 

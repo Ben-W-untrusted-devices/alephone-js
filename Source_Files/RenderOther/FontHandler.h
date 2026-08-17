@@ -132,6 +132,20 @@ public:
 	GLuint TxtrID;
 	GLuint NearFilter = GL_LINEAR;
 	uint32 DispList;
+#ifdef __EMSCRIPTEN__
+	// Web port (see ../../WEB_PORT_PLAN.md, M6b): GLES/WebGL has no display
+	// lists, and Emscripten's legacy GL emulation does not provide them, so
+	// the 256-entry per-glyph list cache built in OGL_Reset() cannot be
+	// used. These are the only values those lists actually baked in; keeping
+	// them lets OGL_Render() re-issue the same draw calls directly. Empty
+	// glyphs are left at Width 0 and skipped, exactly as an unpopulated
+	// display list ID would have been a no-op.
+	struct GlyphDrawInfo {
+		GLfloat Left, Top, Right, Bottom;
+		short Width;
+	};
+	GlyphDrawInfo GlyphDraws[256] = {};
+#endif
 	static std::set<FontSpecifier*> *m_font_registry;
 #endif
 };
