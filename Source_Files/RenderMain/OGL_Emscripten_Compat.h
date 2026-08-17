@@ -331,6 +331,96 @@ static inline void A1_glPopAttrib(void)
 #define GL_FRAMEBUFFER_SRGB_EXT GL_FRAMEBUFFER_SRGB
 #endif
 
+// --- GL_CLAMP -> GL_CLAMP_TO_EDGE ---------------------------------------
+//
+// GL_CLAMP is the legacy desktop wrap mode (clamp to *border*), removed from
+// GLES; WebGL 1.0 accepts only CLAMP_TO_EDGE, REPEAT and MIRRORED_REPEAT.
+// Passing it raises INVALID_ENUM, and -- the part that actually bites -- the
+// parameter is then simply not set, so the texture keeps the default wrap
+// mode, which is GL_REPEAT.
+//
+// Sprites are the textures that ask for clamping (OGL_Txtr_Inhabitant,
+// OGL_Txtr_WeaponsInHand, OGL_Txtr_HUD, plus model skins), and they are drawn
+// on quads whose texture coordinates run outside [0,1]. Left on REPEAT they
+// tile instead of clamping: the first in-browser frame showed the
+// weapons-in-hand sprite repeated at both screen edges, and smearing around
+// world sprites.
+//
+// CLAMP_TO_EDGE is the correct substitution rather than an approximation
+// here. The two differ only in what is sampled beyond the edge -- border
+// colour versus the edge texel -- and this engine never sets a border colour,
+// so it gets the default transparent black either way, which is also what the
+// edge texel of a sprite is.
+#undef GL_CLAMP
+#define GL_CLAMP GL_CLAMP_TO_EDGE
+
+// --- GL_ALPHA_TEST -> discard in the fragment shader --------------------
+//
+// WebGL has no alpha test at all; the only way to drop a fragment is
+// `discard`. The emulation does implement glEnable(GL_ALPHA_TEST)/glAlphaFunc
+// -- but by injecting the comparison into the fragment shader *it* generates
+// for the fixed-function pipeline. The moment a user program is bound it uses
+// that program instead, and the alpha test silently stops happening.
+//
+// This engine binds its own program for every world draw, so alpha test was a
+// complete no-op on the web: sprites rendered as opaque rectangles, since the
+// transparent surround was never discarded (visible as a box around every
+// sprite on the first frame that drew).
+//
+// The fix has two halves. parseShader() injects the uniform declared here
+// plus the comparison, rewriting each fragment shader's single
+// `gl_FragColor = ...;` into a discard followed by the assignment. This side
+// tracks the fixed-function state the engine still sets, and pushes it to the
+// bound program.
+//
+// The push happens at *draw* time rather than when a shader is enabled,
+// because the engine does both orders -- render_node_side() sets the alpha
+// func before enabling its shader, while the sprite path (RenderSprite) sets
+// it after. Hooking glDrawArrays is the one point where the state is
+// guaranteed final, so no call site has to be audited or reordered.
+#define A1_ALPHA_TEST_UNIFORM "a1_alphaTestRef"
+// Alpha is always >= 0, so a negative reference can never discard. That is how
+// "alpha test disabled" is expressed -- no second uniform needed.
+#define A1_ALPHA_TEST_DISABLED (-1.0f)
+
+void A1_SetAlphaTestEnabled(bool enabled);
+void A1_SetAlphaTestFunc(GLenum func, GLclampf ref);
+void A1_NoteProgramBound(GLuint program);
+void A1_PushAlphaTestUniform();
+void A1_ResetAlphaTestCache();
+
+// Defined before the macros below, so these still reach the real entry points.
+inline void A1_glEnableWrap(GLenum cap)
+{
+	if (cap == GL_ALPHA_TEST) A1_SetAlphaTestEnabled(true);
+	glEnable(cap);
+}
+
+inline void A1_glDisableWrap(GLenum cap)
+{
+	if (cap == GL_ALPHA_TEST) A1_SetAlphaTestEnabled(false);
+	glDisable(cap);
+}
+
+inline void A1_glUseProgramWrap(GLuint program)
+{
+	glUseProgram(program);
+	A1_NoteProgramBound(program);
+}
+
+inline void A1_glDrawArraysWrap(GLenum mode, GLint first, GLsizei count)
+{
+	A1_PushAlphaTestUniform();
+	glDrawArrays(mode, first, count);
+}
+
+// glAlphaFunc has no WebGL entry point to forward to at all.
+#define glAlphaFunc(func, ref) A1_SetAlphaTestFunc((func), (ref))
+#define glEnable(cap) A1_glEnableWrap(cap)
+#define glDisable(cap) A1_glDisableWrap(cap)
+#define glUseProgram(program) A1_glUseProgramWrap(program)
+#define glDrawArrays(mode, first, count) A1_glDrawArraysWrap((mode), (first), (count))
+
 #endif // __EMSCRIPTEN__ && HAVE_OPENGL
 
 #endif

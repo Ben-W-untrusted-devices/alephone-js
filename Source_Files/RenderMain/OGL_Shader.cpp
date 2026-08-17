@@ -21,6 +21,7 @@
  */
 #include <algorithm>
 #include <iostream>
+#include <map>
 
 #include "OGL_Shader.h"
 #include "FileHandler.h"
@@ -182,6 +183,95 @@ void parseFile(FileSpecifier& fileSpec, std::string& s) {
 
 
 #ifdef __EMSCRIPTEN__
+// Web port (see ../../WEB_PORT_PLAN.md, M6b): the C++ half of the alpha-test
+// emulation described in OGL_Emscripten_Compat.h. Tracks the fixed-function
+// state the engine still sets, and pushes it to the bound program at draw
+// time.
+namespace {
+	float a1_alpha_ref = A1_ALPHA_TEST_DISABLED;   // effective, -1 when off
+	float a1_alpha_func_ref = A1_ALPHA_TEST_DISABLED;
+	bool a1_alpha_enabled = false;
+	GLuint a1_bound_program = 0;
+
+	// Locations are stable for the life of a linked program, and there are
+	// only ~22 of them, so cache rather than calling glGetUniformLocation --
+	// a synchronous JS round trip -- on every draw.
+	std::map<GLuint, GLint> a1_alpha_locations;
+	GLuint a1_pushed_program = 0;
+	float a1_pushed_ref = 0.0f;
+	bool a1_pushed_valid = false;
+
+	void a1_recompute_alpha_ref()
+	{
+		a1_alpha_ref = a1_alpha_enabled ? a1_alpha_func_ref : A1_ALPHA_TEST_DISABLED;
+	}
+}
+
+void A1_SetAlphaTestEnabled(bool enabled)
+{
+	a1_alpha_enabled = enabled;
+	a1_recompute_alpha_ref();
+}
+
+void A1_SetAlphaTestFunc(GLenum func, GLclampf ref)
+{
+	// This engine only ever asks for GL_GREATER, which `discard if (a <= ref)`
+	// implements exactly. Anything else would need its own comparison in the
+	// injected GLSL, so rather than silently approximating it, fall back to
+	// not discarding and say so once.
+	if (func == GL_GREATER)
+	{
+		a1_alpha_func_ref = ref;
+	}
+	else
+	{
+		if (func != GL_ALWAYS)
+		{
+			static bool warned = false;
+			if (!warned)
+			{
+				warned = true;
+				logWarning("alpha test func 0x%x is not emulated on the web port; not discarding", func);
+			}
+		}
+		a1_alpha_func_ref = A1_ALPHA_TEST_DISABLED;
+	}
+	a1_recompute_alpha_ref();
+}
+
+void A1_NoteProgramBound(GLuint program)
+{
+	a1_bound_program = program;
+}
+
+void A1_ResetAlphaTestCache()
+{
+	a1_alpha_locations.clear();
+	a1_pushed_valid = false;
+}
+
+void A1_PushAlphaTestUniform()
+{
+	// No program bound means the emulation's own fixed-function shader is
+	// drawing, and it applies the alpha test itself.
+	if (!a1_bound_program) return;
+	if (a1_pushed_valid && a1_pushed_program == a1_bound_program && a1_pushed_ref == a1_alpha_ref) return;
+
+	auto found = a1_alpha_locations.find(a1_bound_program);
+	if (found == a1_alpha_locations.end())
+	{
+		found = a1_alpha_locations.emplace(
+			a1_bound_program,
+			glGetUniformLocation(a1_bound_program, A1_ALPHA_TEST_UNIFORM)).first;
+	}
+	if (found->second >= 0)
+		glUniform1f(found->second, a1_alpha_ref);
+
+	a1_pushed_program = a1_bound_program;
+	a1_pushed_ref = a1_alpha_ref;
+	a1_pushed_valid = true;
+}
+
 // Web port (see ../../WEB_PORT_PLAN.md, M6b): Emscripten's legacy-GL GLSL
 // rewriter (libglemu.js) turns the legacy built-ins these shaders use into
 // uniforms and attributes that it then feeds itself. Three of the ones this
@@ -292,6 +382,34 @@ GLhandleARB parseShader(const GLcharARB* str, GLenum shaderType) {
 	{
 		source.push_back(a1_matrix_helpers);
 	}
+
+	// Alpha test (see OGL_Emscripten_Compat.h): WebGL can only drop a fragment
+	// with `discard`, so turn the shader's single `gl_FragColor = <expr>;`
+	// into a test followed by the assignment. Every fragment shader in the
+	// engine writes gl_FragColor exactly once, as the last statement of
+	// main() -- web/test/legacyGlslRewrite.test.ts asserts that invariant,
+	// since a second write here would silently go untested.
+	//
+	// Applied to every fragment shader rather than only the sprite ones,
+	// because that is what fixed-function GL does: the alpha test applies to
+	// all fragments, whatever is drawing. With the test disabled the uniform
+	// is negative and nothing is ever discarded.
+	const std::string::size_type write_at = body.find("gl_FragColor");
+	if (write_at != std::string::npos)
+	{
+		const std::string::size_type eq = body.find('=', write_at);
+		const std::string::size_type end = (eq == std::string::npos) ? std::string::npos : body.find(';', eq);
+		if (end != std::string::npos)
+		{
+			const std::string expr = body.substr(eq + 1, end - eq - 1);
+			body.replace(write_at, end + 1 - write_at,
+			             "{ vec4 a1_c =" + expr + ";"
+			             " if (a1_c.a <= " A1_ALPHA_TEST_UNIFORM ") discard;"
+			             " gl_FragColor = a1_c; }");
+			source.push_back("uniform float " A1_ALPHA_TEST_UNIFORM ";\n");
+		}
+	}
+
 	source.push_back(body.c_str());
 #else
 	source.push_back(str);
@@ -338,6 +456,11 @@ void Shader::unloadAll() {
 	{
 		_shaders[i].unload();
 	}
+#ifdef __EMSCRIPTEN__
+	// Web port: the alpha-test uniform locations are keyed by program name, and
+	// GL is free to hand the same name back out after these are deleted.
+	A1_ResetAlphaTestCache();
+#endif
 }
 
 Shader::Shader(const std::string& name) : _programObj(0), _passes(-1), _loaded(false) {

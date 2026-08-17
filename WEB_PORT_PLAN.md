@@ -2967,6 +2967,58 @@ overflow, the alSourcei parameter-whitelist trap, `AL_MAX_DISTANCE`/
       - Removed the `[canvas ...]` per-click DOM logging from `game.html`; the
         coordinate mapping it was added to diagnose has been correct for
         several milestones.
+  - [x] **Stage 5c — it renders.** The world, textures, sprites and HUD all
+        draw. Two rendering bugs remained in that first playable frame, both
+        the same shape as everything else in this milestone: fixed-function
+        state that WebGL 1.0 either rejects or never sees.
+      - **Sprites tiled instead of clamping.** `GL_CLAMP` is the legacy
+        desktop wrap mode (clamp to *border*), removed from GLES; WebGL 1.0
+        takes only `CLAMP_TO_EDGE`, `REPEAT` and `MIRRORED_REPEAT`. Passing it
+        raises INVALID_ENUM and -- the part that bites -- leaves the parameter
+        unset, so the texture keeps the default, which is `GL_REPEAT`.
+        Sprites are exactly the textures that ask for clamping
+        (`OGL_Txtr_Inhabitant`, `OGL_Txtr_WeaponsInHand`, `OGL_Txtr_HUD`, plus
+        model skins) and are drawn on quads whose coordinates leave [0,1], so
+        they tiled: the weapons-in-hand sprite appeared at both screen edges,
+        and world sprites smeared. Renamed to `CLAMP_TO_EDGE` in the compat
+        header. Not an approximation -- the two differ only in what is sampled
+        past the edge, border colour versus edge texel, and this engine never
+        sets a border colour, so it gets transparent black either way, which
+        is also what a sprite's edge texel is.
+      - **Alpha test was a complete no-op**, which drew every sprite as an
+        opaque rectangle. WebGL has no alpha test; the only way to drop a
+        fragment is `discard`. The emulation *does* implement
+        `glEnable(GL_ALPHA_TEST)`/`glAlphaFunc` -- but by injecting the
+        comparison into the fragment shader **it** generates for the
+        fixed-function pipeline. This engine binds its own program for every
+        world draw, so that injection was never in play, and the engine's own
+        shaders contain no `discard` anywhere.
+      - Emulated it in two halves. `parseShader()` injects a
+        `a1_alphaTestRef` uniform and rewrites each fragment shader's single
+        `gl_FragColor = <expr>;` into a hoist, a discard and the assignment;
+        `OGL_Emscripten_Compat.h` intercepts the fixed-function calls and
+        pushes the state. A negative reference can never discard (alpha is
+        always >= 0), so "disabled" needs no second uniform. Applied to every
+        fragment shader rather than just the sprite ones, because that is what
+        fixed-function GL does -- the test applies to all fragments whatever
+        is drawing.
+      - **The push happens at draw time, not at shader-enable time.** The
+        engine does both orders: `render_node_side()` sets the alpha func
+        before enabling its shader, while the sprite path sets it after.
+        Hooking `glDrawArrays` is the one point where the state is guaranteed
+        final, so no call site had to be audited or reordered -- and uniform
+        locations are cached per program, since `glGetUniformLocation` is a
+        synchronous JS round trip.
+      - Only `GL_GREATER` is emulated, which `discard if (a <= ref)`
+        implements exactly, and which is the only function this engine asks
+        for. Anything else falls back to not discarding and logs once, rather
+        than silently approximating.
+      - The rewrite assumes exactly one `gl_FragColor` write per fragment
+        shader. That held for all 18, and is now asserted in
+        `web/test/legacyGlslRewrite.test.ts` along with the rewrite's own
+        output (self-contained expression, balanced braces, discard present),
+        so a future shader that breaks the assumption fails a test instead of
+        a frame.
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)
 
 ## Status

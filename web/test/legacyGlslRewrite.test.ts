@@ -108,6 +108,38 @@ describe("legacy GLSL rewriting for the WebGL 1.0 build", () => {
     expect(unresolvedIdentifiers(compiled)).toEqual([]);
   });
 
+  // WebGL has no alpha test, so parseShader() rewrites each fragment shader's
+  // single `gl_FragColor = <expr>;` into a discard followed by the assignment.
+  // That rewrite assumes there is exactly one such write; a second one would
+  // go silently untested, so pin the assumption here rather than in a comment.
+  const fragmentShaders = shaders.filter((s) => !s.isVertex);
+
+  it.each(fragmentShaders)("$name writes gl_FragColor exactly once", ({ source }) => {
+    expect(source.match(/gl_FragColor/g) ?? []).toHaveLength(1);
+  });
+
+  it.each(fragmentShaders)("$name survives the alpha-test rewrite", ({ source }) => {
+    const at = source.indexOf("gl_FragColor");
+    const eq = source.indexOf("=", at);
+    const end = source.indexOf(";", eq);
+    expect(end).toBeGreaterThan(eq);
+
+    const expr = source.slice(eq + 1, end);
+    const rewritten =
+      source.slice(0, at) +
+      `{ vec4 a1_c =${expr}; if (a1_c.a <= a1_alphaTestRef) discard; gl_FragColor = a1_c; }` +
+      source.slice(end + 1);
+
+    // The expression must be self-contained, or hoisting it into a temp would
+    // not compile.
+    expect(expr).not.toContain(";");
+    expect(rewritten).toContain("discard");
+    expect(rewritten.match(/gl_FragColor/g) ?? []).toHaveLength(1);
+    // Braces still balanced -- the rewrite adds a block, so a stray brace in
+    // the captured expression would corrupt main().
+    expect(rewritten.split("{").length).toBe(rewritten.split("}").length);
+  });
+
   it("still detects the gaps if the engine's rewrite is skipped", () => {
     // Without applyEnginePass this must fail loudly -- otherwise the test above
     // proves nothing and would keep passing if parseShader() lost its rewrites.
