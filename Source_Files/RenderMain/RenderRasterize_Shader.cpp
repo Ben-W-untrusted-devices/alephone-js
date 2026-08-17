@@ -61,15 +61,27 @@ public:
 			passes = 5;
 
 		glBlendFunc(GL_SRC_ALPHA,GL_ONE);
+		// Web port (see ../../WEB_PORT_PLAN.md, M6b): these are one-texel
+		// steps for the separable blur. Rectangle textures are ordinary 2D
+		// textures here and sample in normalized [0,1], so a texel step is
+		// 1/size rather than 1.
+#ifdef __EMSCRIPTEN__
+		FBO& blur_src = _swapper.current_contents();
+		const float texel_x = blur_src._w ? 1.0f / blur_src._w : 0.0f;
+		const float texel_y = blur_src._h ? 1.0f / blur_src._h : 0.0f;
+#else
+		const float texel_x = 1.0f;
+		const float texel_y = 1.0f;
+#endif
 		for (int i = 0; i < passes; i++) {
 			_shader_blur->enable();
-			_shader_blur->setFloat(Shader::U_OffsetX, 1);
+			_shader_blur->setFloat(Shader::U_OffsetX, texel_x);
 			_shader_blur->setFloat(Shader::U_OffsetY, 0);
 			_shader_blur->setFloat(Shader::U_Pass, i + 1);
 			_swapper.filter(false);
 
 			_shader_blur->setFloat(Shader::U_OffsetX, 0);
-			_shader_blur->setFloat(Shader::U_OffsetY, 1);
+			_shader_blur->setFloat(Shader::U_OffsetY, texel_y);
 			_shader_blur->setFloat(Shader::U_Pass, i + 1);
 			_swapper.filter(false);
 
@@ -1338,8 +1350,8 @@ void RenderRasterize_Shader::render_viewer_sprite_layer(RenderStep renderStep)
 
 struct ExtendedVertexData
 {
-	GLdouble Vertex[4];
-	GLdouble TexCoord[2];
+	A1_VertexScalar Vertex[4];
+	A1_VertexScalar TexCoord[2];
 	GLfloat Color[3];
 	GLfloat GlowColor[3];
 };
@@ -1424,8 +1436,8 @@ void RenderRasterize_Shader::render_viewer_sprite(rectangle_definition& RenderRe
         glDisable(GL_DEPTH_TEST);
 
 	// Location of data:
-	glVertexPointer(3,GL_DOUBLE,sizeof(ExtendedVertexData),ExtendedVertexList[0].Vertex);
-	glTexCoordPointer(2,GL_DOUBLE,sizeof(ExtendedVertexData),ExtendedVertexList[0].TexCoord);
+	glVertexPointer(3,A1_VERTEX_SCALAR_ENUM,sizeof(ExtendedVertexData),ExtendedVertexList[0].Vertex);
+	glTexCoordPointer(2,A1_VERTEX_SCALAR_ENUM,sizeof(ExtendedVertexData),ExtendedVertexList[0].TexCoord);
 	glEnable(GL_TEXTURE_2D);
 		
 	// Go!

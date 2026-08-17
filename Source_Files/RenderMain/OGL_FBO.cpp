@@ -88,7 +88,16 @@ void FBO::deactivate() {
 void FBO::draw() {
 	glBindTexture(GL_TEXTURE_RECTANGLE_ARB, texID);
 	glEnable(GL_TEXTURE_RECTANGLE_ARB);
+	// Web port (see ../../WEB_PORT_PLAN.md, M6b): rectangle textures are
+	// ordinary 2D textures here, which address texels in normalized [0,1]
+	// rather than pixels -- so the same rect is expressed as 0..1 instead of
+	// 0.._w/0.._h. The vertex extents are unchanged; only the texture
+	// coordinates differ.
+#ifdef __EMSCRIPTEN__
+	OGL_RenderTexturedRect(0, 0, _w, _h, 0, 1, 1, 0);
+#else
 	OGL_RenderTexturedRect(0, 0, _w, _h, 0, _h, _w, 0);
+#endif
 	glDisable(GL_TEXTURE_RECTANGLE_ARB);
 }
 
@@ -195,8 +204,16 @@ void FBOSwapper::blend_multisample(FBO& other) {
 	
 	glClientActiveTextureARB(GL_TEXTURE1_ARB);
 	glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+	// Web port (see ../../WEB_PORT_PLAN.md, M6b): normalized coordinates for
+	// the same reason as FBO::draw() above. Also float rather than GL_INT --
+	// GLES has no integer vertex-attribute format for this.
+#ifdef __EMSCRIPTEN__
+	GLfloat multi_coordinates[8] = { 0, 1, 1, 1, 1, 0, 0, 0 };
+	glTexCoordPointer(2, GL_FLOAT, 0, multi_coordinates);
+#else
 	GLint multi_coordinates[8] = { 0, GLint(other._h), GLint(other._w), GLint(other._h), GLint(other._w), 0, 0, 0 };
 	glTexCoordPointer(2, GL_INT, 0, multi_coordinates);
+#endif
 	glClientActiveTextureARB(GL_TEXTURE0_ARB);
 	
 	draw(true);

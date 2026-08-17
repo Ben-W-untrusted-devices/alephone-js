@@ -2792,6 +2792,60 @@ overflow, the alSourcei parameter-whitelist trap, `AL_MAX_DISTANCE`/
         and the runtime work (stage 5, plus the `GL_QUADS`/`GL_POLYGON` and
         `GL_DOUBLE` conversions that compile fine but will fail in WebGL) is
         still ahead.
+  - [x] **Stages 3-5 — everything needed for a first real-browser test.**
+        `./web/build-engine.sh --opengl` now produces a GL-enabled
+        `web/engine/alephone.js`/`.wasm` (55.7MB vs the software build's
+        51.5MB). The flag configures and builds `build-wasm-gl/` on demand,
+        so the known-good software configuration in `build-wasm/` is never
+        disturbed and both can be rebuilt independently.
+      - **The silent-fallback gate.** `screen.cpp` gated the shader renderer
+        on four `GL_ARB_*` extension strings. WebGL advertises none of them
+        -- shaders are core there, not an extension -- so the check would
+        always fail and drop the web build back to software *before drawing
+        anything*, which would have looked exactly like "GL doesn't work".
+        Bypassed under Emscripten, where the context guarantees shader
+        support.
+      - **`GL_POLYGON`/`GL_QUADS` -> `GL_TRIANGLE_FAN`** for all 32 draw
+        sites, as a rename in the compat header so no call site changes.
+        Checked rather than assumed that this is exact: `GL_POLYGON` with N
+        vertices *is* a triangle fan, and while `GL_QUADS` is only
+        equivalent for a single quad, all five sites draw exactly one --
+        three pass a literal 4 and the two passing `vertex_count`
+        (`RenderRasterize_Shader.cpp:885,888`) are preceded by an
+        unconditional `vertex_count = 4;`. Also confirmed the only other
+        `GL_POLYGON` occurrence in the tree is a commented-out line.
+      - **`GL_DOUBLE` -> `GL_FLOAT`** via an `A1_VertexScalar` typedef and
+        matching `A1_VERTEX_SCALAR_ENUM` in `OGL_Headers.h`, so the storage
+        type and the enum handed to GL cannot drift apart. Applied to both
+        file-local `ExtendedVertexData` structs and all 8
+        `glVertexPointer`/`glTexCoordPointer` calls; native keeps doubles.
+        Nothing is lost that reaches the GPU -- desktop drivers convert
+        `GL_DOUBLE` vertex data to float on upload anyway; only the
+        CPU-side interpolation in between drops to single precision.
+      - **Post-processing (in scope per the agreed plan).** The bloom/blur/
+        gamma chain is built on `GL_TEXTURE_RECTANGLE_ARB`, which WebGL does
+        not have. A 2D texture is identical apart from addressing texels in
+        normalized [0,1] rather than pixels, so the target is renamed *and*
+        every coordinate feeding it is normalized at the point it is
+        generated -- `FBO::draw()`, `FBOSwapper::blend_multisample()` (also
+        float rather than `GL_INT`, which GLES has no vertex format for),
+        and the separable blur's one-texel step, which becomes `1/size` from
+        the FBO's own dimensions. With those normalized the shaders need
+        nothing but a `sampler2DRect`/`texture2DRect` rename, injected via
+        `parseShader()`'s existing `#define` mechanism -- no size uniform has
+        to be threaded through. `gl_ClipVertex` is disabled through the same
+        mechanism, reusing the engine's own pre-existing
+        `DISABLE_CLIP_VERTEX` switch.
+      - Added a startup diagnostic reporting `GL_VERSION`/`GL_RENDERER`/
+        `GL_SHADING_LANGUAGE_VERSION` and whether the shader path survived,
+        so a fallback to software is visible in the `#log` panel instead of
+        being indistinguishable from "GL ran but drew nothing".
+      - **Ready for a first real-browser test.** Note the renderer is a
+        *preference*: existing saved preferences (persisted in IndexedDB
+        from every previous software-only run) will still say software, so
+        it has to be switched in Preferences -> Graphics -> Rendering
+        Options. Expect problems -- this is the first time any of this has
+        executed.
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)
 
 ## Status

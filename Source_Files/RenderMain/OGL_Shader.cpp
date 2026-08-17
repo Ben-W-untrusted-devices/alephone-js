@@ -188,7 +188,23 @@ GLhandleARB parseShader(const GLcharARB* str, GLenum shaderType) {
 
 	std::vector<const GLcharARB*> source;
 
-        if (DisableClipVertex()) {
+#ifdef __EMSCRIPTEN__
+	// Web port (see ../../WEB_PORT_PLAN.md, M6b): GLSL ES has no
+	// sampler2DRect/texture2DRect. Rectangle textures are mapped to ordinary
+	// 2D textures (see OGL_Emscripten_Compat.h) and every coordinate that
+	// reaches them is normalized at the point it is generated, so the
+	// sampling calls differ in name only.
+	source.push_back("#define sampler2DRect sampler2D\n");
+	source.push_back("#define texture2DRect texture2D\n");
+	// gl_ClipVertex does not exist in GLSL ES either, so this is
+	// unconditional here rather than a preference. The switch and the
+	// matching #ifndef guards in the .vert files are already part of the
+	// engine -- upstream added them for desktop drivers with the same gap.
+	const bool disable_clip_vertex = true;
+#else
+	const bool disable_clip_vertex = DisableClipVertex();
+#endif
+        if (disable_clip_vertex) {
             source.push_back("#define DISABLE_CLIP_VERTEX\n");
         }
 	if (Wanting_sRGB)

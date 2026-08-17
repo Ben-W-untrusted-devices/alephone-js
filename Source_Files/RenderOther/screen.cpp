@@ -970,7 +970,19 @@ static void change_screen_mode(int width, int height, int depth, bool nogl, bool
 #if defined (__WIN32__) && (HAVE_OPENGL)
 		glewInit();
 #endif
+		// Web port (see ../../WEB_PORT_PLAN.md, M6b): WebGL never advertises
+		// these four -- shaders are core functionality there, not an ARB
+		// extension, so a context that supports them still reports none of
+		// these strings. Left unguarded this check always fails and silently
+		// drops the web build back to the software renderer before anything
+		// is ever drawn. Shader support is guaranteed by the context itself
+		// here (see OGL_Emscripten_Compat.h, which maps this engine's ARB
+		// shader calls onto the core GL2 entry points).
+#ifdef __EMSCRIPTEN__
+		if (false)
+#else
 		if (!OGL_CheckExtension("GL_ARB_vertex_shader") || !OGL_CheckExtension("GL_ARB_fragment_shader") || !OGL_CheckExtension("GL_ARB_shader_objects") || !OGL_CheckExtension("GL_ARB_shading_language_100"))
+#endif
 		{
 			logWarning("OpenGL (Shader) renderer is not available");
 			fprintf(stderr, "WARNING: Failed to initialize OpenGL renderer\n");
@@ -986,6 +998,24 @@ static void change_screen_mode(int width, int height, int depth, bool nogl, bool
 		{
 			passed_shader = true;
 		}
+#if defined(__EMSCRIPTEN__) && defined(HAVE_OPENGL)
+		// Web port diagnostic (see ../../WEB_PORT_PLAN.md, M6b): first run of
+		// the GL renderer in a browser. Reports what context we actually got
+		// and whether the shader path survived the check above -- without
+		// this, a fallback to software is silent and indistinguishable from
+		// "GL ran but drew nothing". Safe to remove once the renderer is
+		// known-good.
+		{
+			const char* ver = (const char*)glGetString(GL_VERSION);
+			const char* rend = (const char*)glGetString(GL_RENDERER);
+			const char* slv = (const char*)glGetString(GL_SHADING_LANGUAGE_VERSION);
+			fprintf(stderr, "[gl] version=%s\n", ver ? ver : "(null)");
+			fprintf(stderr, "[gl] renderer=%s\n", rend ? rend : "(null)");
+			fprintf(stderr, "[gl] glsl=%s\n", slv ? slv : "(null)");
+			fprintf(stderr, "[gl] passed_shader=%d acceleration=%d (0=software, 1=opengl)\n",
+				passed_shader ? 1 : 0, screen_mode.acceleration);
+		}
+#endif
 	}
 //#endif
 

@@ -1208,8 +1208,8 @@ void FindShadingColor(GLdouble Depth, _fixed Shading, GLfloat *Color)
 // Storage of intermediate results for mass render with glDrawArrays
 struct ExtendedVertexData
 {
-	GLdouble Vertex[4];
-	GLdouble TexCoord[2];
+	A1_VertexScalar Vertex[4];
+	A1_VertexScalar TexCoord[2];
 	GLfloat Color[3];
 	GLfloat GlowColor[3];
 };
@@ -1626,8 +1626,8 @@ static bool RenderAsRealWall(polygon_definition& RenderPolygon, bool IsVertical)
 	SetProjectionType(Projection_OpenGL_Eye);
 	
 	// Location of data:
-	glVertexPointer(4,GL_DOUBLE,sizeof(ExtendedVertexData),ExtendedVertexList[0].Vertex);
-	glTexCoordPointer(2,GL_DOUBLE,sizeof(ExtendedVertexData),ExtendedVertexList[0].TexCoord);
+	glVertexPointer(4,A1_VERTEX_SCALAR_ENUM,sizeof(ExtendedVertexData),ExtendedVertexList[0].Vertex);
+	glTexCoordPointer(2,A1_VERTEX_SCALAR_ENUM,sizeof(ExtendedVertexData),ExtendedVertexList[0].TexCoord);
 	
 	// Painting a texture...
 	glEnable(GL_TEXTURE_2D);
@@ -1984,8 +1984,8 @@ static bool RenderAsLandscape(polygon_definition& RenderPolygon)
 	SetProjectionType(Projection_Screen);
 	
 	// Location of data:
-	glVertexPointer(3,GL_DOUBLE,sizeof(ExtendedVertexData),ExtendedVertexList[0].Vertex);
-	glTexCoordPointer(2,GL_DOUBLE,sizeof(ExtendedVertexData),ExtendedVertexList[0].TexCoord);
+	glVertexPointer(3,A1_VERTEX_SCALAR_ENUM,sizeof(ExtendedVertexData),ExtendedVertexList[0].Vertex);
+	glTexCoordPointer(2,A1_VERTEX_SCALAR_ENUM,sizeof(ExtendedVertexData),ExtendedVertexList[0].TexCoord);
 	
 	// Painting a texture...
 	glEnable(GL_TEXTURE_2D);
@@ -2192,8 +2192,8 @@ bool OGL_RenderSprite(rectangle_definition& RenderRectangle)
 	glColor4fv(Color);
 	
 	// Location of data:
-	glVertexPointer(3,GL_DOUBLE,sizeof(ExtendedVertexData),ExtendedVertexList[0].Vertex);
-	glTexCoordPointer(2,GL_DOUBLE,sizeof(ExtendedVertexData),ExtendedVertexList[0].TexCoord);
+	glVertexPointer(3,A1_VERTEX_SCALAR_ENUM,sizeof(ExtendedVertexData),ExtendedVertexList[0].Vertex);
+	glTexCoordPointer(2,A1_VERTEX_SCALAR_ENUM,sizeof(ExtendedVertexData),ExtendedVertexList[0].TexCoord);
 	glEnable(GL_TEXTURE_2D);
 		
 	// Go!

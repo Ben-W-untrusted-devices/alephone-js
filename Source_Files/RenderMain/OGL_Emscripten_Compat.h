@@ -282,6 +282,51 @@ static inline void A1_glPopAttrib(void)
 #define glPushAttrib A1_glPushAttrib
 #define glPopAttrib A1_glPopAttrib
 
+// --- GL_POLYGON / GL_QUADS -> GL_TRIANGLE_FAN ---------------------------
+//
+// Neither primitive exists in GLES, and the emulation only converts them
+// inside the glBegin/glEnd path this engine never uses -- so all 32
+// glDrawArrays sites would fail at runtime. Both map exactly here:
+//
+//   GL_POLYGON with N vertices is one convex polygon, which is precisely
+//   what a triangle fan draws. Verified every use is a draw mode (the only
+//   other occurrence in the tree is a commented-out line).
+//
+//   GL_QUADS is only equivalent for a *single* quad -- with 8 vertices it
+//   would mean two separate quads, which a fan would draw wrong. Checked
+//   all five sites: three pass a literal 4, and the two that pass
+//   vertex_count (RenderRasterize_Shader.cpp:885,888) are preceded by an
+//   unconditional `vertex_count = 4;`. So every use is a single quad.
+//
+// Doing this as a rename keeps all 32 call sites untouched and identical
+// to native. GL_POLYGON_STIPPLE is a separate token and is unaffected.
+#undef GL_POLYGON
+#define GL_POLYGON GL_TRIANGLE_FAN
+#undef GL_QUADS
+#define GL_QUADS GL_TRIANGLE_FAN
+
+// --- Rectangle textures -> ordinary 2D textures -------------------------
+//
+// The whole post-processing chain (bloom, blur, gamma) is built on
+// GL_TEXTURE_RECTANGLE_ARB, which does not exist in GLES/WebGL. A 2D
+// texture behaves identically apart from its coordinate space: rectangle
+// textures address texels in pixels, 2D textures in normalized [0,1].
+//
+// So this rename is only half the fix -- the coordinates feeding it have to
+// be normalized too. That is done at the (few) places that generate them:
+// FBO::draw(), FBOSwapper::blend_multisample() and the blur pass's
+// offsetx/offsety step in RenderRasterize_Shader.cpp. With those
+// normalized, the shaders need nothing but the sampler/lookup rename
+// below, which parseShader() injects -- no size uniform has to be threaded
+// through.
+#define GL_TEXTURE_RECTANGLE_ARB GL_TEXTURE_2D
+
+// sRGB framebuffer objects: GLES3 spells the enable bit without the EXT
+// suffix (and, as noted above, controls encoding via the format anyway).
+#ifndef GL_FRAMEBUFFER_SRGB_EXT
+#define GL_FRAMEBUFFER_SRGB_EXT GL_FRAMEBUFFER_SRGB
+#endif
+
 #endif // __EMSCRIPTEN__ && HAVE_OPENGL
 
 #endif

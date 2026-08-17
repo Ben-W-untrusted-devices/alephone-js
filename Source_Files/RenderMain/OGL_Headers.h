@@ -49,6 +49,7 @@
 
 #elif defined(__WIN32__)
 
+
 #define GLEW_STATIC 1
 #include <GL/glew.h>
 
@@ -66,6 +67,24 @@
 #include <GL/glu.h>
 #endif
 
+#endif
+
+// Web port (see ../../WEB_PORT_PLAN.md, M6b): GLES/WebGL has no GL_DOUBLE
+// vertex format, but this engine keeps its intermediate vertex/texcoord
+// arrays in GLdouble and hands them straight to glVertexPointer. Desktop
+// drivers convert those to float on upload anyway, so nothing that reaches
+// the GPU is lost by storing float here -- only the CPU-side interpolation
+// in between runs at single precision. Used by the (file-local, separately
+// declared) ExtendedVertexData structs in OGL_Render.cpp and
+// RenderRasterize_Shader.cpp and by their glVertexPointer/glTexCoordPointer
+// calls, so the storage type and the enum passed to GL can never drift
+// apart.
+#ifdef __EMSCRIPTEN__
+typedef GLfloat A1_VertexScalar;
+#define A1_VERTEX_SCALAR_ENUM GL_FLOAT
+#else
+typedef GLdouble A1_VertexScalar;
+#define A1_VERTEX_SCALAR_ENUM GL_DOUBLE
 #endif
 
 #endif

@@ -8,7 +8,22 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BUILD_DIR="${BUILD_DIR:-$REPO_ROOT/build-wasm}"
+
+# --opengl builds the OpenGL renderer (see WEB_PORT_PLAN.md, M6b) in its own
+# directory, so the known-good software build is never disturbed and the two
+# can be rebuilt independently. Without it, nothing about this script's
+# behavior changes.
+USE_OPENGL=no
+if [ "${1:-}" = "--opengl" ]; then
+  USE_OPENGL=yes
+  shift
+fi
+
+if [ "$USE_OPENGL" = "yes" ]; then
+  BUILD_DIR="${BUILD_DIR:-$REPO_ROOT/build-wasm-gl}"
+else
+  BUILD_DIR="${BUILD_DIR:-$REPO_ROOT/build-wasm}"
+fi
 OUT_DIR="${OUT_DIR:-$REPO_ROOT/web/engine}"
 
 if [ -f "$REPO_ROOT/../emsdk/emsdk_env.sh" ]; then
@@ -19,6 +34,25 @@ fi
 if ! command -v emmake >/dev/null; then
   echo "emmake not on PATH -- source emsdk_env.sh first" >&2
   exit 1
+fi
+
+# The GL build dir is configured on demand, since it is new and nobody has
+# one yet. The flag list mirrors the recipe in WEB_PORT_PLAN.md, plus
+# --enable-opengl (Emscripten GL is opt-in while the renderer is being
+# brought up).
+if [ "$USE_OPENGL" = "yes" ] && [ ! -f "$BUILD_DIR/Source_Files/Makefile" ]; then
+  echo "Configuring OpenGL build in $BUILD_DIR..."
+  mkdir -p "$BUILD_DIR"
+  (
+    cd "$BUILD_DIR"
+    emconfigure "$REPO_ROOT/configure" --enable-opengl \
+      --with-boost=/opt/homebrew \
+      --without-zzip --without-vpx --without-matroska --without-ebml \
+      --without-vorbis --without-vorbisenc --without-nfd --without-catch2 \
+      --without-curl --without-png \
+      CPPFLAGS="-I/opt/homebrew/include" \
+      PKG_CONFIG_PATH="$REPO_ROOT/vcpkg/installed-wasm32-emscripten/wasm32-emscripten/lib/pkgconfig"
+  )
 fi
 
 if [ ! -f "$BUILD_DIR/Source_Files/Makefile" ]; then
