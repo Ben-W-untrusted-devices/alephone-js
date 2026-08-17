@@ -1253,14 +1253,6 @@ bool load_game_from_file(FileSpecifier& File, bool run_scripts)
 	uint32 parent_checksum = read_wad_file_parent_checksum(File);
 	bool found_map = use_map_file(parent_checksum); /* Find the original scenario this saved game was a part of.. */
 
-#ifdef __EMSCRIPTEN__
-	// Web port diagnostic (see ../../WEB_PORT_PLAN.md, M4j): "Continue Saved
-	// Game" has been observed to crash later on an unopenable MapFile with
-	// no clear repro yet -- this narrows down which branch actually ran,
-	// without changing behavior. Safe to remove once root-caused.
-	fprintf(stderr, "[load_game_from_file] parent_checksum=%u found_map=%d\n", parent_checksum, found_map);
-#endif
-
 	FileSpecifier map_parent;
 	if (found_map) {
 		map_parent = get_map_file();
@@ -1272,9 +1264,6 @@ bool load_game_from_file(FileSpecifier& File, bool run_scripts)
 	set_map_file(File, false);
 	/* Load the level from the map */
 	success= load_level_from_map(NONE); /* Save games are ALWAYS index NONE */
-#ifdef __EMSCRIPTEN__
-	fprintf(stderr, "[load_game_from_file] load_level_from_map(NONE) success=%d\n", success);
-#endif
 	if (success)
 	{
 		if(found_map)

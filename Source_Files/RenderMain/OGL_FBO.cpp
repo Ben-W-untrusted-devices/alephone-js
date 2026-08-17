@@ -31,21 +31,87 @@
 
 std::vector<FBO *> FBO::active_chain;
 
+// Web port (see ../../WEB_PORT_PLAN.md, M6b): WebGL 1.0 has no
+// GL_FRAMEBUFFER_SRGB capability, so enabling or disabling it raises
+// INVALID_ENUM. That is harmless in itself, but it happens several times per
+// frame and would leave a stale error sitting in glGetError() for every
+// diagnostic downstream of it to trip over. Route the toggles through one
+// place that does nothing here, rather than editing each call site.
+static inline void A1_SetFramebufferSRGB(bool enable)
+{
+#ifdef __EMSCRIPTEN__
+	(void)enable;
+#else
+	if (enable)
+		glEnable(GL_FRAMEBUFFER_SRGB_EXT);
+	else
+		glDisable(GL_FRAMEBUFFER_SRGB_EXT);
+#endif
+}
+
 FBO::FBO(GLuint w, GLuint h, bool srgb) : _h(h), _w(w), _srgb(srgb) {
 	glGenFramebuffersEXT(1, &_fbo);
 	glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, _fbo);
 	
 	glGenRenderbuffersEXT(1, &_depthBuffer);
 	glBindRenderbufferEXT(GL_RENDERBUFFER_EXT, _depthBuffer);
+	// Web port (see ../../WEB_PORT_PLAN.md, M6b): the context here is WebGL 1.0,
+	// which takes exactly the *opposite* sizing convention to desktop GL for
+	// these two calls, and rejects the desktop spellings outright:
+	//
+	//   - renderbuffer storage must be a *sized* format. Unsized
+	//     GL_DEPTH_COMPONENT is not in WebGL 1.0's list (RGBA4, RGB565,
+	//     RGB5_A1, DEPTH_COMPONENT16, STENCIL_INDEX8, DEPTH_STENCIL), so it
+	//     raises INVALID_ENUM and the renderbuffer is left with no storage.
+	//   - glTexImage2D's internalformat must be *unsized*, and must equal the
+	//     format argument. GL_RGB8 is a WebGL 2 spelling; GL_SRGB needs the
+	//     EXT_sRGB extension. Either one raises INVALID_ENUM and the texture
+	//     is left with no storage.
+	//
+	// Either failure alone leaves the framebuffer incomplete, which is what
+	// tripped the assertion below on the first in-browser run. Both attachments
+	// still end up 8-bit-per-channel colour and >=16-bit depth; the only real
+	// loss is sRGB-correct blending, which WebGL 1.0 cannot express here.
+#ifdef __EMSCRIPTEN__
+	glRenderbufferStorageEXT(GL_RENDERBUFFER_EXT, GL_DEPTH_COMPONENT16, _w, _h);
+#else
 	glRenderbufferStorageEXT(GL_RENDERBUFFER_EXT, GL_DEPTH_COMPONENT, _w, _h);
+#endif
 	glFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, GL_DEPTH_ATTACHMENT_EXT, GL_RENDERBUFFER_EXT, _depthBuffer);
-	
+
 	glGenTextures(1, &texID);
 	glBindTexture(GL_TEXTURE_RECTANGLE_ARB, texID);
+#ifdef __EMSCRIPTEN__
+	glTexImage2D(GL_TEXTURE_RECTANGLE_ARB, 0, GL_RGB, _w, _h, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+#else
 	glTexImage2D(GL_TEXTURE_RECTANGLE_ARB, 0, srgb ? GL_SRGB : GL_RGB8, _w, _h, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+#endif
 	glTexParameteri(GL_TEXTURE_RECTANGLE_ARB, GL_TEXTURE_MAG_FILTER, TxtrTypeInfoList[OGL_Txtr_HUD].NearFilter);
+#ifdef __EMSCRIPTEN__
+	// GL_TEXTURE_RECTANGLE_ARB is GL_TEXTURE_2D here (see
+	// OGL_Emscripten_Compat.h), so unlike a real rectangle target -- which
+	// rejects mipmap minification filters with INVALID_ENUM and so silently
+	// keeps GL_LINEAR -- a mipmapped HUD filter preference would actually take
+	// effect, and leave this (mipmap-less) attachment texture incomplete.
+	glTexParameteri(GL_TEXTURE_RECTANGLE_ARB, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	// Likewise, the render target is the window size and so routinely
+	// non-power-of-two; WebGL 1.0 only samples NPOT textures with CLAMP wrap.
+	glTexParameteri(GL_TEXTURE_RECTANGLE_ARB, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_RECTANGLE_ARB, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+#else
 	glTexParameteri(GL_TEXTURE_RECTANGLE_ARB, GL_TEXTURE_MIN_FILTER, TxtrTypeInfoList[OGL_Txtr_HUD].FarFilter);
+#endif
 	glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT, GL_TEXTURE_RECTANGLE_ARB, texID, 0);
+#ifdef __EMSCRIPTEN__
+	// Web port: report *which* completeness failure happened rather than only
+	// asserting, since there is no debugger to inspect the status in.
+	{
+		GLenum fbo_status = glCheckFramebufferStatusEXT(GL_FRAMEBUFFER_EXT);
+		if (fbo_status != GL_FRAMEBUFFER_COMPLETE_EXT)
+			fprintf(stderr, "[gl] FBO %ux%u incomplete: status=0x%x (last error 0x%x)\n",
+			        _w, _h, fbo_status, glGetError());
+	}
+#endif
 	assert(glCheckFramebufferStatusEXT(GL_FRAMEBUFFER_EXT) == GL_FRAMEBUFFER_COMPLETE_EXT);
 	glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, 0);
 }
@@ -57,10 +123,7 @@ void FBO::activate(bool clear, GLuint fboTarget) {
 		glBindFramebufferEXT(fboTarget, _fbo);
 		glPushAttrib(GL_VIEWPORT_BIT);
 		glViewport(0, 0, _w, _h);
-		if (_srgb)
-			glEnable(GL_FRAMEBUFFER_SRGB_EXT);
-		else
-			glDisable(GL_FRAMEBUFFER_SRGB_EXT);
+		A1_SetFramebufferSRGB(_srgb);
 		if (clear)
 			glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 	}
@@ -78,10 +141,7 @@ void FBO::deactivate() {
 			prev_srgb = active_chain.back()->_srgb;
 		}
 		glBindFramebufferEXT(_fboTarget, prev_fbo);
-		if (prev_srgb)
-			glEnable(GL_FRAMEBUFFER_SRGB_EXT);
-		else
-			glDisable(GL_FRAMEBUFFER_SRGB_EXT);
+		A1_SetFramebufferSRGB(prev_srgb);
 	}
 }
 
@@ -184,10 +244,7 @@ void FBOSwapper::copy(FBO& other, bool srgb) {
 
 void FBOSwapper::blend(FBO& other, bool srgb) {
 	activate();
-	if (!srgb)
-		glDisable(GL_FRAMEBUFFER_SRGB_EXT);
-	else
-		glEnable(GL_FRAMEBUFFER_SRGB_EXT);
+	A1_SetFramebufferSRGB(srgb);
 	other.draw_full(true);
 	deactivate();
 }

@@ -22,136 +22,41 @@
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #include <emscripten/emscripten.h>
-// Web port (see ../../WEB_PORT_PLAN.md, M5): diagnostic + safety net for a
-// still-reported "no sound" symptom after the non-loopback fallback below
-// engages successfully (no crash, no error) -- routes through
-// Module.printErr() rather than console.error() so it actually reaches the
-// page's #log panel (this project's primary debugging surface, since
-// Safari's dev tools have been unusable for this tab -- see game.html).
+// Web port (see ../../WEB_PORT_PLAN.md, M5): safety net for the browser
+// autoplay policy. Emscripten's OpenAL port already arms a one-time
+// resume-on-gesture listener when the AudioContext is created
+// (autoResumeAudioContext, wired into alcCreateContext) -- but only once, at
+// creation time. If OpenALManager::Init() recreates the context later (a
+// preferences change, say -- see Init()'s own Shutdown()-and-recreate path)
+// after the page's last real user gesture, that listener has nothing left to
+// fire on and audio would stay suspended forever. So re-arm it here, and also
+// attach a persistent 'statechange' handler, which covers the browser
+// suspending the context on its own later on.
+//
 // `AL` here is Emscripten's own OpenAL port's internal namespace
-// (emsdk/upstream/emscripten/src/lib/libopenal.js) -- accessible because
-// all JS library code and EM_JS code share one compiled-output scope, not
-// because it's an exported/public API; guarded with typeof/try-catch in
-// case that ever stops holding. libopenal.js already arms a one-time
-// resume-on-gesture listener when the context is created
-// (autoResumeAudioContext, wired into alcCreateContext), but only once, at
-// creation time -- if OpenALManager::Init() ever recreates the context
-// (e.g. a preferences change, see Init()'s own Shutdown()-and-recreate
-// path) after the page's last real user gesture, that one-time listener
-// has nothing left to fire on. This logs the actual state so the next
-// report is definitive rather than a guess, and arms one more redundant
-// listener as a safety net for exactly that recreation case.
-// Web port diagnostic (see ../../WEB_PORT_PLAN.md, M5): dumps the *real*
-// Web Audio state behind each OpenAL source. The C++ side already reports
-// AL_SOURCE_STATE=AL_PLAYING with a running AudioContext and non-zero
-// volumes while nothing is audible, so the remaining candidates all live
-// below the AL abstraction: a zero gain node, an empty scheduled-buffer
-// queue (`audioQueue`), or Emscripten's own scheduler having bailed out.
-// That scheduler (`AL.scheduleContextAudio`, driven by its own setInterval
-// -- see libopenal.js) early-returns entirely when
-// `MainLoop.timingMode === EM_TIMING_RAF && document.visibilityState !=
-// 'visible'`, so those two are logged as well. Reaches into libopenal.js's
-// internal `AL` namespace, same as web_log_audio_context_state() below.
-EM_JS(void, web_log_al_sources, (), {
+// (emsdk/upstream/emscripten/src/lib/libopenal.js) -- reachable because all JS
+// library code and EM_JS code share one compiled-output scope, not because
+// it's an exported or supported API. Hence the typeof/try-catch guards: if
+// that ever stops holding, this quietly does nothing rather than throwing
+// into the audio path.
+EM_JS(void, web_arm_audio_context_resume, (), {
     try {
         if (typeof AL === 'undefined' || !AL.currentCtx || !AL.currentCtx.audioCtx) return;
         var ctx = AL.currentCtx.audioCtx;
-        var timing = (typeof MainLoop !== 'undefined') ? MainLoop.timingMode : 'n/a';
-        Module.printErr('[audio js] ctx.state=' + ctx.state + ' ctx.currentTime=' + ctx.currentTime.toFixed(2)
-            + ' visibility=' + document.visibilityState + ' MainLoop.timingMode=' + timing);
-        // Only report sources that are actually in use. The pool is 128
-        // strong and idle ones all look identical (AL_INITIAL, gain=1, and
-        // a single zero-length null buffer left by ResetSource()'s
-        // alSourcei(AL_BUFFER, 0)) -- printing all of them buries the few
-        // interesting lines.
-        var shown = 0;
-        for (var i in AL.currentCtx.sources) {
-            var src = AL.currentCtx.sources[i];
-            if (src.state === 0x1011 /* AL_INITIAL */) continue;
-            var gainVal = (src.gain && src.gain.gain) ? src.gain.gain.value : 'n/a';
-            // bufLengths: the real per-buffer sample counts. A zero here is
-            // the smoking gun -- libopenal.js's scheduler skips zero-length
-            // buffers entirely, so the source sits at AL_PLAYING forever
-            // with audioQueue=0 and never makes a sound.
-            var bufLengths = src.bufQueue ? src.bufQueue.map(function(b) { return b.length; }).join(',') : 'n/a';
-            Module.printErr('[audio js] src#' + i + ' state=0x' + src.state.toString(16)
-                + ' gain=' + gainVal
-                + ' bufQueue=' + (src.bufQueue ? src.bufQueue.length : 'n/a')
-                + ' bufLengths=[' + bufLengths + ']'
-                + ' bufsProcessed=' + src.bufsProcessed
-                + ' audioQueue=' + (src.audioQueue ? src.audioQueue.length : 'n/a')
-                + ' type=0x' + (src.type || 0).toString(16));
-            // Spatialization: distance attenuation happens in the PannerNode,
-            // *after* the gain node logged above, so a source can show a
-            // healthy gain and still be inaudible. If the listener never
-            // moves off the origin while sounds sit at real world
-            // coordinates, an inverse-distance model attenuates them to
-            // nothing -- which would look exactly like the current symptom.
-            if (src.panner) {
-                var lp = AL.currentCtx.listener ? AL.currentCtx.listener.position : null;
-                var dist = 'n/a';
-                if (lp && src.position) {
-                    var dx = src.position[0] - lp[0], dy = src.position[1] - lp[1], dz = src.position[2] - lp[2];
-                    dist = Math.sqrt(dx*dx + dy*dy + dz*dz).toFixed(2);
-                }
-                Module.printErr('[audio js]   spatial: pos=[' + (src.position || []).join(',')
-                    + '] listener=[' + (lp ? lp.join(',') : 'n/a')
-                    + '] distance=' + dist
-                    + ' refDistance=' + src.refDistance + ' maxDistance=' + src.maxDistance
-                    + ' rolloff=' + src.rolloffFactor + ' relative=' + src.relative
-                    + ' distanceModel=' + src.panner.distanceModel);
-            }
-            if (++shown >= 6) break;
-        }
-        if (!shown) Module.printErr('[audio js] (no sources in use)');
-    } catch (e) {
-        Module.printErr('[audio js] web_log_al_sources failed: ' + e);
-    }
-});
-
-EM_JS(void, web_log_audio_context_state, (), {
-    try {
-        if (typeof AL === 'undefined' || !AL.currentCtx || !AL.currentCtx.audioCtx) {
-            Module.printErr('[audio] no current AL context to inspect');
-            return;
-        }
-        var ctx = AL.currentCtx.audioCtx;
-        Module.printErr('[audio] AudioContext state: ' + ctx.state + ' (sampleRate=' + ctx.sampleRate + ')');
         var resumeOnce = function() {
-            if (ctx.state === 'suspended') {
-                ctx.resume().then(function() {
-                    Module.printErr('[audio] AudioContext resumed, state now: ' + ctx.state);
-                }).catch(function(e) {
-                    Module.printErr('[audio] AudioContext resume() rejected: ' + e);
-                });
-            }
+            if (ctx.state === 'suspended') ctx.resume().catch(function() {});
         };
         if (ctx.state === 'suspended') {
             for (var type of ['mousedown', 'keydown', 'touchstart']) {
                 document.addEventListener(type, resumeOnce, { once: true });
             }
         }
-        // Web port diagnostic (see ../../WEB_PORT_PLAN.md, M5): the
-        // one-shot check/log above only sees the state at the moment this
-        // runs (right after device/context creation) -- real-browser
-        // reports of music silently dying mid-session (specifically right
-        // when a dialog like Preferences or Continue Saved Game opens),
-        // with no corresponding OpenALManager::Init()/SoundManager::SetStatus()
-        // reinit log, rule out the device/context being recreated on the
-        // C++ side. If the *browser* is independently suspending this same
-        // AudioContext later for some reason, this is the only way to see
-        // it: attach a real 'statechange' listener (not one-shot) that
-        // logs every future transition, and try to resume again whenever
-        // it goes back to suspended.
-        if (!ctx.__a1StatechangeLogged) {
-            ctx.__a1StatechangeLogged = true;
-            ctx.addEventListener('statechange', function() {
-                Module.printErr('[audio] AudioContext statechange -> ' + ctx.state);
-                resumeOnce();
-            });
+        if (!ctx.__a1StatechangeArmed) {
+            ctx.__a1StatechangeArmed = true;
+            ctx.addEventListener('statechange', resumeOnce);
         }
     } catch (e) {
-        Module.printErr('[audio] web_log_audio_context_state failed: ' + e);
+        // Deliberately silent: this is a best-effort safety net.
     }
 });
 #endif
@@ -174,21 +79,6 @@ bool OpenALManager::Init(const AudioParameters& parameters) {
 		if (parameters.hrtf != instance->audio_parameters.hrtf || parameters.rate != instance->audio_parameters.rate
 			|| parameters.channel_type != instance->audio_parameters.channel_type || parameters.sample_frame_size != instance->audio_parameters.sample_frame_size) {
 
-#ifdef __EMSCRIPTEN__
-			// Web port diagnostic (see ../../WEB_PORT_PLAN.md, M5): real-browser
-			// reports of music/audio dying right when a dialog (Preferences,
-			// Continue Saved Game) opens -- this is the one place OpenALManager
-			// destroys and recreates its whole device/context (a fresh
-			// AudioContext, needing its own gesture-triggered resume, and every
-			// existing source/queue gone), so confirming whether -- and why --
-			// this path is actually being hit is the fastest way to find out if
-			// that's the cause. Safe to remove once root-caused.
-			fprintf(stderr, "[audio] Init() reinitializing: hrtf %d->%d rate %u->%u channel_type %d->%d sample_frame_size %u->%u\n",
-				instance->audio_parameters.hrtf, parameters.hrtf,
-				instance->audio_parameters.rate, parameters.rate,
-				(int)instance->audio_parameters.channel_type, (int)parameters.channel_type,
-				instance->audio_parameters.sample_frame_size, parameters.sample_frame_size);
-#endif
 			Shutdown();
 
 		} else {
@@ -221,14 +111,12 @@ bool OpenALManager::Init(const AudioParameters& parameters) {
 
 	instance = new OpenALManager(parameters);
 	bool success = instance->OpenDevice() && instance->LoadOptionalExtensions() && instance->GenerateSources() && instance->GenerateEffects();
-#ifdef __EMSCRIPTEN__
-	// Web port (see ../../WEB_PORT_PLAN.md, M5): OpenDevice() logs its own
-	// success/AudioContext-state diagnostics -- this just confirms whether
-	// the *whole* chain (LoadOptionalExtensions()/GenerateSources()/
-	// GenerateEffects() too) actually succeeded, since a false here is
-	// silently swallowed by SoundManager::SetStatus()'s caller.
-	logError("OpenALManager::Init() overall result: %s", success ? "success" : "FAILED");
-#endif
+	// Web port (see ../../WEB_PORT_PLAN.md, M5): a false here is otherwise
+	// swallowed silently by SoundManager::SetStatus()'s caller, which used to
+	// make "no sound at all" indistinguishable from "sound is fine but
+	// nothing is playing yet". Only the failure is worth a line.
+	if (!success)
+		logError("OpenALManager::Init() failed");
 	return success;
 }
 
@@ -252,55 +140,7 @@ void OpenALManager::ProcessAudioQueue() {
 
 		auto audio = audio_players_queue.front();
 
-#ifdef __EMSCRIPTEN__
-		// Web port diagnostic (see ../../WEB_PORT_PLAN.md, M5): real-browser
-		// testing shows players genuinely get queued (queue_size briefly
-		// non-zero) then disappear again almost immediately -- meaning
-		// something in this exact chain returns false right away. Evaluated
-		// step by step (still short-circuiting exactly like the single
-		// expression below, so AssignSource()/Update()/Play() are never
-		// called out of order or after an earlier failure) so the log says
-		// which stage actually failed instead of just "didn't play". Safe
-		// to remove once root-caused.
-		bool stepAssigned = false, stepUpdated = false, stepPlayed = false;
-		bool mustStillPlay = false;
-		if (!audio->stop_signal) {
-			stepAssigned = audio->AssignSource();
-			if (stepAssigned) {
-				stepUpdated = audio->Update();
-				if (stepUpdated) {
-					stepPlayed = audio->Play();
-					mustStillPlay = stepPlayed;
-				}
-			}
-		}
-		if (!mustStillPlay && !audio->stop_signal) {
-			// Also report whether this was music or a sound effect, and how
-			// many buffers were actually queued on its AL source. Play()
-			// returns false precisely when zero buffers are queued after
-			// FillBuffers() -- so queued=0 here means the player produced no
-			// audio data at all (a decoding/data problem), while queued>0
-			// would mean an alGetError() failure instead. This distinguishes
-			// "menu click sounds never play" from "a finished sound is being
-			// retired normally", which currently look identical.
-			bool isMusic = std::dynamic_pointer_cast<MusicPlayer>(audio) != nullptr;
-			ALint queuedBuffers = -1;
-			if (stepAssigned && audio->audio_source)
-				alGetSourcei(audio->audio_source->source_id, AL_BUFFERS_QUEUED, &queuedBuffers);
-			// rate/format/stereo too: Emscripten's alBufferData rejects a
-			// zero (or otherwise invalid) frequency outright, leaving the
-			// buffer zero-length -- and libopenal.js's scheduler silently
-			// skips zero-length buffers, which is exactly the observed
-			// "bufQueue=1 but audioQueue=0, nothing ever audible" state.
-			// OpenALManager is a friend of AudioPlayer, hence the direct
-			// access to these.
-			fprintf(stderr, "[audio player] failed: is_music=%d assigned=%d updated=%d played=%d queued_buffers=%d rate=%u format=%d stereo=%d\n",
-				isMusic, stepAssigned, stepUpdated, stepPlayed, queuedBuffers,
-				audio->rate, (int)audio->format, audio->stereo);
-		}
-#else
 		const bool mustStillPlay = !audio->stop_signal && audio->AssignSource() && audio->Update() && audio->Play();
-#endif
 
 		audio_players_queue.pop_front();
 
@@ -432,40 +272,6 @@ void OpenALManager::Tick() {
 	// call needed afterward: OpenAL renders/outputs audio itself once
 	// sources are queued and playing, it isn't pulled into a buffer we own.
 	if (p_UsingLoopback || !process_audio_active || paused_audio) return;
-#ifdef __EMSCRIPTEN__
-	// Web port diagnostic (see ../../WEB_PORT_PLAN.md, M5): AudioContext is
-	// confirmed running now, but real-browser testing still reports total
-	// silence -- this narrows down whether the game is even attempting to
-	// queue anything (empty queue -> look upstream, at SoundManager/Music)
-	// versus queuing sources that just never produce audible output (non-
-	// empty queue -> look at AudioPlayer/OpenAL state itself). Throttled to
-	// roughly once every 3 seconds to stay readable in the #log panel.
-	// Safe to remove once root-caused.
-	static uint32 last_tick_log = 0;
-	uint32 now = machine_tick_count();
-	if (now - last_tick_log >= 3 * MACHINE_TICKS_PER_SECOND) {
-		last_tick_log = now;
-		fprintf(stderr, "[audio tick] queue_size=%zu master_volume=%.3f music_volume=%.3f\n",
-			audio_players_queue.size(), master_volume.load(), music_volume.load());
-		// Web port diagnostic (see ../../WEB_PORT_PLAN.md, M5): real-browser
-		// reports of music going silent (Safari-specific) with the queue,
-		// volumes, and AudioContext.state all reported completely normal
-		// throughout -- this checks the one thing not yet checked: whether
-		// the queued player really is music, and what its OpenAL source's
-		// *actual* AL_SOURCE_STATE is (AL_PLAYING=0x1012/AL_PAUSED=0x1013/
-		// AL_STOPPED=0x1014/AL_INITIAL=0x1011), independent of whatever our
-		// own bookkeeping believes. Safe to remove once root-caused.
-		for (const auto& player : audio_players_queue) {
-			bool isMusic = std::dynamic_pointer_cast<MusicPlayer>(player) != nullptr;
-			ALint sourceState = -1;
-			bool hasSource = player->audio_source != nullptr;
-			if (hasSource) alGetSourcei(player->audio_source->source_id, AL_SOURCE_STATE, &sourceState);
-			fprintf(stderr, "[audio tick] player is_music=%d has_source=%d al_source_state=0x%x is_active=%d\n",
-				isMusic, hasSource, sourceState, player->IsActive());
-		}
-		web_log_al_sources();
-	}
-#endif
 	ProcessAudioQueue();
 }
 
@@ -593,7 +399,7 @@ bool OpenALManager::OpenDevice() {
 			return false;
 		}
 
-		web_log_audio_context_state();
+		web_arm_audio_context_resume();
 		return true;
 	}
 

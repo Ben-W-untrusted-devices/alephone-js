@@ -319,6 +319,10 @@ static inline void A1_glPopAttrib(void)
 // normalized, the shaders need nothing but the sampler/lookup rename
 // below, which parseShader() injects -- no size uniform has to be threaded
 // through.
+// Emscripten's GL/glext.h declares the token (as the desktop 0x84F5) even
+// though no GLES/WebGL target implements the texture target itself, so undef
+// before redefining -- same as GL_POLYGON/GL_QUADS above.
+#undef GL_TEXTURE_RECTANGLE_ARB
 #define GL_TEXTURE_RECTANGLE_ARB GL_TEXTURE_2D
 
 // sRGB framebuffer objects: GLES3 spells the enable bit without the EXT

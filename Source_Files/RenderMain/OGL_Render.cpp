@@ -537,7 +537,17 @@ bool OGL_StartRun()
 #endif
 
 	Wanting_sRGB = false;
+	// Web port (see ../../WEB_PORT_PLAN.md, M6b): hold this off unconditionally
+	// under WebGL 1.0. Enabling it rewrites texture internal formats to
+	// GL_SRGB/GL_SRGB_ALPHA (OGL_Textures.cpp, PlaceTexture), which WebGL 1.0
+	// rejects -- so every texture would silently fail to upload. The extension
+	// check below would normally decline anyway, but this does not depend on
+	// which extensions a given browser chooses to expose.
+#ifdef __EMSCRIPTEN__
+	if(false) {
+#else
 	if(graphics_preferences->OGL_Configure.Use_sRGB) {
+#endif
 	  if(!OGL_CheckExtension("GL_EXT_framebuffer_sRGB") || !OGL_CheckExtension("GL_EXT_texture_sRGB"))
 	  {
 	    graphics_preferences->OGL_Configure.Use_sRGB = false;
@@ -2808,8 +2818,16 @@ void StaticModeShader(void *Data)
 			Buffer[k] = Pxl;
 		}
 		
+		// Web port (see ../../WEB_PORT_PLAN.md, M6b): WebGL 1.0 needs an
+		// unsized internal format equal to the format argument; both spellings
+		// on the right would raise INVALID_ENUM. See OGL_Textures.cpp.
+#ifdef __EMSCRIPTEN__
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, TxSize, TxSize,
+			0, GL_RGBA, GL_UNSIGNED_BYTE, Buffer);
+#else
 		glTexImage2D(GL_TEXTURE_2D, 0, Using_sRGB ? GL_SRGB_ALPHA : GL_RGBA8, TxSize, TxSize,
 			0, GL_RGBA, GL_UNSIGNED_BYTE, Buffer);
+#endif
 		
 		glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);

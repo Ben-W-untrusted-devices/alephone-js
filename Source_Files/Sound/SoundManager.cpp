@@ -724,16 +724,6 @@ void SoundManager::SetStatus(bool active)
 {
 	if (!initialized) return;
 
-#ifdef __EMSCRIPTEN__
-	// Web port diagnostic (see ../../WEB_PORT_PLAN.md, M5): pairs with the
-	// one in OpenALManager::Init() -- confirms whether/how often this gets
-	// called (each active=true call re-derives AudioParameters and calls
-	// Init(), which may or may not actually reinitialize the device).
-	// Safe to remove once the music/audio-dies-on-dialog-open reports are
-	// root-caused.
-	fprintf(stderr, "[audio] SoundManager::SetStatus(active=%d)\n", active);
-#endif
-
 	if (active)
 	{
 		sounds->Clear();

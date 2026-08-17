@@ -401,20 +401,6 @@ void w_button_base::mouse_up(int x, int y)
 	last_activation_tick = now;
 
 	bool hit = x >= 0 && x <= rect.w && y >= 0 && y <= rect.h;
-#ifdef __EMSCRIPTEN__
-	// Web port diagnostic (see ../../WEB_PORT_PLAN.md, M5): Crosshair
-	// Settings' Accept/Cancel reported as completely inert, with no new
-	// lead after ruling out the shared-dialog_surface bug and the
-	// per-frame processing_function (BinderSet::migrate_all_first_to_second(),
-	// intentional live-preview sync, not obviously related). This confirms
-	// whether the click is even registering as a hit on the button at all
-	// (a hit-test/layout problem) versus registering but proc() not having
-	// the expected effect (a problem in the button's own action). Safe to
-	// remove once root-caused.
-	fprintf(stderr, "[w_button_base::mouse_up] \"%s\" x=%d y=%d rect=%dx%d hit=%d debounced=%d has_proc=%d\n",
-		text.c_str(), x, y, rect.w, rect.h, hit, debounced, proc != nullptr);
-#endif
-
 	if (proc && !debounced && hit)
 		proc(arg);
 }
@@ -1878,16 +1864,6 @@ void w_slider::mouse_move(int x, int /*y*/)
 void w_slider::click(int x, int /*y*/)
 {
     if(enabled) {
-#ifdef __EMSCRIPTEN__
-	    // Web port diagnostic (see ../../WEB_PORT_PLAN.md, M5): sliders have
-	    // been reported unresponsive even after the canvas-resolution fix --
-	    // leading hypothesis is that this hit test (unlike a button's
-	    // whole-rect test) is narrow enough that a small click-coordinate
-	    // offset would miss it consistently. Safe to remove once confirmed
-	    // or ruled out.
-	    fprintf(stderr, "[w_slider::click] x=%d thumb_x=%d thumb_width=%d hit=%d\n",
-		    x, thumb_x, thumb_width(), (x >= thumb_x && x < thumb_x + thumb_width()));
-#endif
 	    if (x >= thumb_x && x < thumb_x + thumb_width()) {
 		    thumb_dragging = dirty = true;
 		    thumb_drag_x = x - thumb_x;

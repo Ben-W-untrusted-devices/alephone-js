@@ -261,7 +261,13 @@ void FlatBumpTexture() {
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+		// Web port: unsized internal format, matching format -- see the note on
+		// ColorFormatList below.
+#ifdef __EMSCRIPTEN__
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, flatTextureData);
+#else
 		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, flatTextureData);
+#endif
 	}
 	else
 		glBindTexture(GL_TEXTURE_2D, flatBumpTextureID);
@@ -301,12 +307,30 @@ void OGL_StartTextures()
 		GL_LINEAR_MIPMAP_LINEAR
 	};
 	const int NUMBER_OF_COLOR_FORMATS = 3;
-	const GLenum ColorFormatList[NUMBER_OF_COLOR_FORMATS] = 
+	// Web port (see ../../WEB_PORT_PLAN.md, M6b): WebGL 1.0 accepts only
+	// *unsized* internal formats, and requires internalformat == format. Every
+	// upload in this file passes GL_RGBA as the format, so GL_RGBA is the only
+	// legal internal format here -- the sized spellings below all raise
+	// INVALID_ENUM, which would leave every texture in the game with no
+	// storage at all. The colour-depth preference therefore has no effect on
+	// the web port; the browser picks the backing precision.
+	const GLenum ColorFormatList[NUMBER_OF_COLOR_FORMATS] =
 	{
+#ifdef __EMSCRIPTEN__
+		GL_RGBA,
+		GL_RGBA,
+		GL_RGBA
+#else
 		GL_RGBA8,
 		GL_RGBA4,
 		GL_RGBA2
+#endif
 	};
+#ifdef __EMSCRIPTEN__
+	const GLenum DefaultColorFormat = GL_RGBA;
+#else
+	const GLenum DefaultColorFormat = GL_RGBA8;
+#endif
 	
 	OGL_ConfigureData& ConfigureData = Get_OGL_ConfigureData();
 	
@@ -333,7 +357,7 @@ void OGL_StartTextures()
 		if (ColorFormat < NUMBER_OF_COLOR_FORMATS)
 			TxtrTypeInfo.ColorFormat = ColorFormatList[ColorFormat];
 		else
-			TxtrTypeInfo.ColorFormat = GL_RGBA8;
+			TxtrTypeInfo.ColorFormat = DefaultColorFormat;
 	}
 
 	// Model skin
@@ -359,7 +383,7 @@ void OGL_StartTextures()
 		if (ColorFormat < NUMBER_OF_COLOR_FORMATS)
 			TxtrTypeInfo.ColorFormat = ColorFormatList[ColorFormat];
 		else
-			TxtrTypeInfo.ColorFormat = GL_RGBA8;
+			TxtrTypeInfo.ColorFormat = DefaultColorFormat;
 	}
 
 #if defined GL_SGIS_generate_mipmap

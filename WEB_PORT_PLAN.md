@@ -2846,6 +2846,69 @@ overflow, the alSourcei parameter-whitelist trap, `AL_MAX_DISTANCE`/
         it has to be switched in Preferences -> Graphics -> Rendering
         Options. Expect problems -- this is the first time any of this has
         executed.
+  - [x] **Stage 5a — first real-browser run: WebGL 1.0's format rules.**
+        The renderer genuinely engaged (`passed_shader=1 acceleration=1`),
+        menus and Preferences worked, and a new game ran all the way through
+        `begin_game` -> `continue_starting_game` -> `start_game` and the
+        first chapter screen's fade-out -- then aborted on
+        `OGL_FBO.cpp`'s framebuffer-completeness assertion.
+      - **The context is WebGL 1.0, not WebGL 2** (`OpenGL ES 2.0 (WebGL 1.0
+        ...)`, `GLSL ES 1.00`). That single fact explains the crash, because
+        WebGL 1.0 takes the *opposite* sizing convention to desktop GL in
+        two places, and rejects the wrong spelling outright rather than
+        ignoring it:
+        - `glRenderbufferStorage` needs a **sized** format. Unsized
+          `GL_DEPTH_COMPONENT` is not in its list, so it raised
+          `INVALID_ENUM` and the depth renderbuffer was left with no
+          storage. Now `GL_DEPTH_COMPONENT16`.
+        - `glTexImage2D`'s internalformat must be **unsized** *and equal to
+          the format argument*. `GL_RGB8`/`GL_RGBA8`/`GL_RGBA4`/`GL_RGBA2`
+          are all WebGL 2 spellings and `GL_SRGB*` needs `EXT_sRGB`; each
+          raises `INVALID_ENUM`, leaving the texture with no storage. Now
+          `GL_RGB`/`GL_RGBA`.
+        Either failure alone leaves the framebuffer incomplete, which is
+        what tripped the assertion.
+      - **This was never only about the FBO.** The same rule governs every
+        texture in the game: `ColorFormatList` in `OGL_Textures.cpp` is
+        `{GL_RGBA8, GL_RGBA4, GL_RGBA2}`, so *no* texture would have
+        uploaded. Fixed at the three choke points where an internal format
+        is chosen (`ColorFormatList` and its two fallbacks, the 1x1 flat
+        texture, and `OGL_Render.cpp`'s fader texture) rather than at the
+        nine `glTexImage2D` call sites. Consequence: the colour-depth
+        preference has no effect on the web port -- the browser picks the
+        backing precision.
+      - **sRGB is now held off unconditionally** under Emscripten. Enabling
+        it rewrites internal formats to `GL_SRGB`/`GL_SRGB_ALPHA` in
+        `PlaceTexture()`, which would silently un-fix the above; the
+        extension check would normally decline anyway, but this does not
+        depend on which extensions a browser chooses to expose. The
+        per-frame `GL_FRAMEBUFFER_SRGB` enable/disable is likewise routed
+        through one no-op helper -- WebGL 1.0 has no such capability, so
+        each call left a stale `INVALID_ENUM` for the next `glGetError()`
+        to trip over.
+      - Two smaller WebGL 1.0 rules handled at the same time, both
+        consequences of `GL_TEXTURE_RECTANGLE_ARB` being mapped to
+        `GL_TEXTURE_2D`: a mipmap minification filter would now actually
+        *take effect* on the mipmap-less attachment texture (a real
+        rectangle target rejects it and keeps `GL_LINEAR`), and the render
+        target is window-sized and so routinely non-power-of-two, which
+        WebGL 1.0 only samples with `CLAMP_TO_EDGE`.
+      - The bare `assert` now prints the actual completeness status and
+        `glGetError()` first, since there is no debugger to inspect it in.
+      - **Sound diagnostics removed** now that audio is working: the
+        3-second `[audio tick]` dump, the `[audio js]` Web Audio source
+        inspector, the `[audio player] failed` breakdown (and the
+        step-by-step chain that fed it, collapsed back to the original
+        single expression), and the `SetStatus`/`Init()` reinit traces.
+        What stays is what is functional rather than diagnostic: the
+        AudioContext resume safety net, now named
+        `web_arm_audio_context_resume()` for what it actually does, and the
+        non-finite listener/position guards, which are silent unless
+        something is genuinely wrong. Also removed the now-stale
+        `[w_button_base::mouse_up]`, `[w_slider::click]` and
+        `[load_game_from_file]` traces. The `[begin_game]`/`[start_game]`
+        markers stay for now -- they fire once per game start, not per
+        frame, and they are what localized this crash.
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)
 
 ## Status
