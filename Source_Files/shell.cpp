@@ -623,6 +623,37 @@ static void initialize_marathon_music_handler(void)
 		Music::instance()->SetupIntroMusic(file);
 }
 
+#ifdef __EMSCRIPTEN__
+// Web port (see WEB_PORT_PLAN.md, M4c/M6c): the blocking sibling below spins
+// dialog::run()'s own event loop, which never returns to the browser -- so
+// pressing Escape in a game froze the page outright, heartbeat included. This
+// is the same cooperative conversion used for the preferences dialogs: the
+// dialog is heap-allocated (a stack one would dangle the moment we return to
+// the frame loop) and the answer arrives in a callback instead of a return
+// value.
+void quit_without_saving_cooperatively(std::function<void(bool)> on_answer)
+{
+	dialog *d = new dialog;
+	vertical_placer *placer = new vertical_placer;
+	placer->dual_add (new w_static_text("Are you sure you wish to"), *d);
+	placer->dual_add (new w_static_text("cancel the game in progress?"), *d);
+	placer->add (new w_spacer(), true);
+
+	horizontal_placer *button_placer = new horizontal_placer;
+	w_button *default_button = new w_button("YES", dialog_ok, d);
+	button_placer->dual_add (default_button, *d);
+	button_placer->dual_add (new w_button("NO", dialog_cancel, d), *d);
+	d->activate_widget(default_button);
+	placer->add(button_placer, true);
+	d->set_widget_placer(placer);
+
+	run_dialog_cooperatively(d, [d, on_answer](int result) {
+		on_answer(result == 0);
+		delete d;
+	});
+}
+#endif
+
 bool quit_without_saving(void)
 {
 	dialog d;

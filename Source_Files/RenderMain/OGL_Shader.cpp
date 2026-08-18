@@ -183,6 +183,34 @@ void parseFile(FileSpecifier& fileSpec, std::string& s) {
 
 
 #ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+
+// Web port (see ../../WEB_PORT_PLAN.md, M6c): WebGL has no GL_CURRENT_COLOR to
+// query -- it is fixed-function state the emulation keeps on the JS side. Read
+// it from there rather than from GL, so glPushAttrib/glPopAttrib can save and
+// restore it. `GLImmediate` is the emulation's internal namespace, reachable
+// because all JS library code shares one compiled-output scope; guarded in
+// case that stops holding, in which case white is the GL default and the
+// least damaging answer.
+EM_JS(void, a1_read_emulated_color, (float* out), {
+    var r = 1.0, g = 1.0, b = 1.0, a = 1.0;
+    try {
+        var c = GLImmediate.clientColor;
+        if (c && c.length >= 4) { r = c[0]; g = c[1]; b = c[2]; a = c[3]; }
+    } catch (e) {
+        // fall through to the default
+    }
+    HEAPF32[(out >> 2) + 0] = r;
+    HEAPF32[(out >> 2) + 1] = g;
+    HEAPF32[(out >> 2) + 2] = b;
+    HEAPF32[(out >> 2) + 3] = a;
+});
+
+void A1_GetCurrentColor(GLfloat* out_rgba)
+{
+	a1_read_emulated_color(out_rgba);
+}
+
 // Web port (see ../../WEB_PORT_PLAN.md, M6b): the C++ half of the alpha-test
 // emulation described in OGL_Emscripten_Compat.h. Tracks the fixed-function
 // state the engine still sets, and pushes it to the bound program at draw

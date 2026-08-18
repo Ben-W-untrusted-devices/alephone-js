@@ -37,6 +37,53 @@
 #include "screen.h"
 
 // Global variables
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+
+// Web port (see ../../WEB_PORT_PLAN.md, M6c): pointer lock is only granted to
+// a request made from a real user gesture on the element. enter_mouse() runs
+// when gameplay starts, which is not one -- Emscripten's SDL defers its own
+// request to the next event, but Safari does not accept every event as an
+// activation, so the lock was never actually taken there: the cursor was
+// hidden and motion was tracked, but turning stopped at the canvas edge.
+//
+// So arm a click handler and take the lock from inside it, which is the
+// gesture every browser accepts. This runs alongside SDL's own attempt rather
+// than replacing it -- where SDL's request already succeeds this finds the
+// lock held and does nothing. It also re-acquires after the browser drops the
+// lock (pressing Escape releases it), which SDL does not retry on its own.
+EM_JS(void, web_set_pointer_lock_wanted, (int wanted), {
+    try {
+        Module.__a1PointerLockWanted = !!wanted;
+        var canvas = Module.canvas || document.getElementById('canvas');
+        if (!canvas) return;
+
+        if (!wanted) {
+            if (document.pointerLockElement === canvas && document.exitPointerLock) {
+                document.exitPointerLock();
+            }
+            return;
+        }
+        if (canvas.__a1PointerLockArmed) return;
+        canvas.__a1PointerLockArmed = true;
+        var acquire = function() {
+            if (!Module.__a1PointerLockWanted) return;
+            if (document.pointerLockElement === canvas) return;
+            if (!canvas.requestPointerLock) return;
+            // Safari returns undefined here, other browsers a promise; a
+            // rejection is normal (the gesture may have expired) and must not
+            // surface as an unhandled rejection.
+            var pending = canvas.requestPointerLock();
+            if (pending && pending.catch) pending.catch(function() {});
+        };
+        canvas.addEventListener('mousedown', acquire);
+        canvas.addEventListener('click', acquire);
+    } catch (e) {
+        // Best effort: never let this break input handling.
+    }
+});
+#endif
+
 static bool mouse_active = false;
 static uint8 button_mask = 0;		// Mask of enabled buttons
 static fixed_yaw_pitch mouselook_delta = {0, 0};
@@ -55,6 +102,9 @@ void enter_mouse(short type)
 		
 		SDL_SetHint(SDL_HINT_MOUSE_RELATIVE_MODE_WARP, input_preferences->raw_mouse_input ? "0" : "1");
 		SDL_SetRelativeMouseMode(SDL_TRUE);
+#ifdef __EMSCRIPTEN__
+		web_set_pointer_lock_wanted(1);
+#endif
 		mouse_active = true;
 		mouselook_delta = {0, 0};
 		snapshot_delta_scrollwheel = 0;
@@ -72,6 +122,9 @@ void exit_mouse(short type)
 {
 	if (type != _keyboard_or_game_pad) {
 		SDL_SetRelativeMouseMode(SDL_FALSE);
+#ifdef __EMSCRIPTEN__
+		web_set_pointer_lock_wanted(0);
+#endif
 		mouse_active = false;
 	}
 }

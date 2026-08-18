@@ -226,37 +226,86 @@ static inline void A1_glGetInfoLog(GLuint obj, GLsizei maxLength, GLsizei* lengt
 // emulated state, and round-tripping them through glIsEnabled risks
 // setting a GL error that the engine's own glGetError checks would then
 // misattribute.
+// Two pieces of state here cannot be read back from WebGL, which is what made
+// the first version of this shim actively harmful rather than merely
+// incomplete:
+//
+//   - GL_BLEND_SRC / GL_BLEND_DST are desktop GL 1.x enums. WebGL spells them
+//     BLEND_SRC_RGB / BLEND_DST_RGB and rejects the old names, so the query
+//     failed and left the output untouched -- zero, i.e. GL_ZERO. Popping then
+//     set glBlendFunc(GL_ZERO, GL_ZERO), which makes everything drawn
+//     afterwards come out black.
+//   - GL_CURRENT_COLOR is fixed-function state that WebGL does not have at
+//     all, so that query failed the same way and popping set the colour to
+//     transparent black.
+//
+// Track the blend function on this side instead of asking GL for it, and read
+// the colour from the emulation's own record of it (A1_GetCurrentColor).
+inline GLenum A1_blendSrc = GL_ONE;
+inline GLenum A1_blendDst = GL_ZERO;
+
+inline void A1_glBlendFuncWrap(GLenum sfactor, GLenum dfactor)
+{
+	A1_blendSrc = sfactor;
+	A1_blendDst = dfactor;
+	glBlendFunc(sfactor, dfactor);
+}
+#define glBlendFunc(sfactor, dfactor) A1_glBlendFuncWrap((sfactor), (dfactor))
+
+// Defined in OGL_Shader.cpp: reads the emulation's current colour directly,
+// since there is no GL query for it here.
+void A1_GetCurrentColor(GLfloat* out_rgba);
+
 struct A1_GLAttribState {
+	GLbitfield mask;
 	GLboolean texture2D, blend, depthTest, cullFace, scissorTest, stencilTest;
 	GLboolean depthMask;
 	GLint viewport[4];
 	GLint matrixMode;
-	GLint blendSrc, blendDst;
+	GLenum blendSrc, blendDst;
 	GLfloat color[4];
 };
 
 // 16 deep matches the real GL minimum for the attribute stack; this engine
-// never nests more than two.
-static A1_GLAttribState A1_attribStack[16];
-static int A1_attribStackDepth = 0;
+// never nests more than two. `inline` rather than `static` so every
+// translation unit shares one stack -- with `static` each got a private copy,
+// which only worked because every push and its pop happen to sit in the same
+// file.
+inline A1_GLAttribState A1_attribStack[16];
+inline int A1_attribStackDepth = 0;
 
-static inline void A1_glPushAttrib(GLbitfield)
+// Honouring the mask is not just tidiness. FBO::activate() pushes only
+// GL_VIEWPORT_BIT, and it does so around every post-processing pass -- so a
+// shim that saved and restored everything would reset the blend function and
+// current colour on each pop, whether or not it could read them correctly.
+static inline void A1_glPushAttrib(GLbitfield mask)
 {
 	if (A1_attribStackDepth >= 16) return;
 	A1_GLAttribState& s = A1_attribStack[A1_attribStackDepth++];
+	s.mask = mask;
 
-	s.texture2D = glIsEnabled(GL_TEXTURE_2D);
-	s.blend = glIsEnabled(GL_BLEND);
-	s.depthTest = glIsEnabled(GL_DEPTH_TEST);
-	s.cullFace = glIsEnabled(GL_CULL_FACE);
-	s.scissorTest = glIsEnabled(GL_SCISSOR_TEST);
-	s.stencilTest = glIsEnabled(GL_STENCIL_TEST);
-	glGetBooleanv(GL_DEPTH_WRITEMASK, &s.depthMask);
-	glGetIntegerv(GL_VIEWPORT, s.viewport);
-	glGetIntegerv(GL_MATRIX_MODE, &s.matrixMode);
-	glGetIntegerv(GL_BLEND_SRC, &s.blendSrc);
-	glGetIntegerv(GL_BLEND_DST, &s.blendDst);
-	glGetFloatv(GL_CURRENT_COLOR, s.color);
+	if (mask & GL_ENABLE_BIT)
+	{
+		s.texture2D = glIsEnabled(GL_TEXTURE_2D);
+		s.blend = glIsEnabled(GL_BLEND);
+		s.depthTest = glIsEnabled(GL_DEPTH_TEST);
+		s.cullFace = glIsEnabled(GL_CULL_FACE);
+		s.scissorTest = glIsEnabled(GL_SCISSOR_TEST);
+		s.stencilTest = glIsEnabled(GL_STENCIL_TEST);
+	}
+	if (mask & GL_DEPTH_BUFFER_BIT)
+		glGetBooleanv(GL_DEPTH_WRITEMASK, &s.depthMask);
+	if (mask & GL_VIEWPORT_BIT)
+		glGetIntegerv(GL_VIEWPORT, s.viewport);
+	if (mask & GL_TRANSFORM_BIT)
+		glGetIntegerv(GL_MATRIX_MODE, &s.matrixMode);
+	if (mask & GL_COLOR_BUFFER_BIT)
+	{
+		s.blendSrc = A1_blendSrc;
+		s.blendDst = A1_blendDst;
+	}
+	if (mask & GL_CURRENT_BIT)
+		A1_GetCurrentColor(s.color);
 }
 
 static inline void A1_glPopAttrib(void)
@@ -267,17 +316,25 @@ static inline void A1_glPopAttrib(void)
 	auto setEnabled = [](GLenum cap, GLboolean on) {
 		if (on) glEnable(cap); else glDisable(cap);
 	};
-	setEnabled(GL_TEXTURE_2D, s.texture2D);
-	setEnabled(GL_BLEND, s.blend);
-	setEnabled(GL_DEPTH_TEST, s.depthTest);
-	setEnabled(GL_CULL_FACE, s.cullFace);
-	setEnabled(GL_SCISSOR_TEST, s.scissorTest);
-	setEnabled(GL_STENCIL_TEST, s.stencilTest);
-	glDepthMask(s.depthMask);
-	glViewport(s.viewport[0], s.viewport[1], s.viewport[2], s.viewport[3]);
-	glMatrixMode(s.matrixMode);
-	glBlendFunc(s.blendSrc, s.blendDst);
-	glColor4f(s.color[0], s.color[1], s.color[2], s.color[3]);
+	if (s.mask & GL_ENABLE_BIT)
+	{
+		setEnabled(GL_TEXTURE_2D, s.texture2D);
+		setEnabled(GL_BLEND, s.blend);
+		setEnabled(GL_DEPTH_TEST, s.depthTest);
+		setEnabled(GL_CULL_FACE, s.cullFace);
+		setEnabled(GL_SCISSOR_TEST, s.scissorTest);
+		setEnabled(GL_STENCIL_TEST, s.stencilTest);
+	}
+	if (s.mask & GL_DEPTH_BUFFER_BIT)
+		glDepthMask(s.depthMask);
+	if (s.mask & GL_VIEWPORT_BIT)
+		glViewport(s.viewport[0], s.viewport[1], s.viewport[2], s.viewport[3]);
+	if (s.mask & GL_TRANSFORM_BIT)
+		glMatrixMode(s.matrixMode);
+	if (s.mask & GL_COLOR_BUFFER_BIT)
+		glBlendFunc(s.blendSrc, s.blendDst);
+	if (s.mask & GL_CURRENT_BIT)
+		glColor4f(s.color[0], s.color[1], s.color[2], s.color[3]);
 }
 #define glPushAttrib A1_glPushAttrib
 #define glPopAttrib A1_glPopAttrib

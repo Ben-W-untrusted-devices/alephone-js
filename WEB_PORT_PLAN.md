@@ -3060,6 +3060,48 @@ overflow, the alSourcei parameter-whitelist trap, `AL_MAX_DISTANCE`/
         The worst case is `landscape_sphere.vert` at seven, so there is one
         slot spare -- now asserted in the test suite, since running out would
         otherwise show up only on a minimum-spec device.
+  - [x] **M6c — three gameplay bugs found in play testing.**
+      - **Screen went black on item pickup and on being hit by some weapons.**
+        Traced to this port's own `glPushAttrib`/`glPopAttrib` shim, which was
+        saving state with two enums WebGL cannot answer: `GL_BLEND_SRC` and
+        `GL_BLEND_DST` are desktop GL 1.x spellings (WebGL has
+        `BLEND_SRC_RGB`/`BLEND_DST_RGB`), and `GL_CURRENT_COLOR` is
+        fixed-function state WebGL does not have at all. Both queries failed
+        and left their outputs untouched -- zero -- so every pop issued
+        `glBlendFunc(GL_ZERO, GL_ZERO)`, after which anything drawn without
+        setting its own blend function came out black.
+      - That explains the oddly specific symptom exactly. Of the six fader
+        types, `_tint_fader_type` (item pickups) and the flat-static branch of
+        `_randomize_fader_type` (being hit) are precisely the two that do not
+        set their own `glBlendFunc` and inherit whatever is current; the other
+        four set one and were unaffected -- hence "certain weapons".
+      - Fixed on three levels: the shim now **honours the mask** (FBO
+        post-processing pushes only `GL_VIEWPORT_BIT` around every pass, so
+        saving and restoring everything was wrong regardless of whether it
+        could read it); the blend function is tracked on the C++ side through
+        an intercepted `glBlendFunc` instead of being queried; and the current
+        colour is read from the emulation's own record of it. The stack is
+        also now `inline` rather than `static`, so translation units share one
+        instead of each getting a private copy -- which had only worked
+        because every push happened to sit in the same file as its pop.
+      - **Escape during gameplay froze the page**, heartbeat included. It maps
+        to `do_menu_item_command(mGame, iQuitGame)`, whose single-player path
+        calls `quit_without_saving()` -- a blocking `dialog::run()`, which
+        never returns to the browser. Converted to the cooperative pattern
+        already used for the preferences dialogs: the confirmation is
+        heap-allocated and the answer arrives in a callback, with the rest of
+        the case deferred into it. Returning early is the whole of the
+        deferral, since every other path leaves `game_state` untouched.
+      - **Pointer lock never engaged in Safari** -- cursor hidden and motion
+        tracked, but turning stopped at the canvas edge. The lock is only
+        granted to a request made from a real user gesture on the element, and
+        `enter_mouse()` runs when gameplay starts, which is not one.
+        Emscripten's SDL defers its own request to the next event, but Safari
+        does not accept every event as an activation. So the port now also
+        arms a click handler and takes the lock from inside it. This runs
+        alongside SDL's attempt rather than replacing it -- where SDL already
+        succeeds it finds the lock held and does nothing -- and it re-acquires
+        after the browser drops the lock, which SDL does not retry on its own.
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)
 
 ## Status

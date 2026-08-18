@@ -53,6 +53,7 @@ May 16, 2002 (Woody Zenfell):
 */
 
 #include "cseries.h"
+#include <functional>
 
 class FileSpecifier;
 class OpenedResourceFile;
@@ -414,6 +415,10 @@ void handle_load_game(void);
 void handle_save_game(void);
 bool handle_start_game(void);
 bool quit_without_saving(void);
+#ifdef __EMSCRIPTEN__
+// Web port: non-blocking counterpart -- see the comment on the definition.
+void quit_without_saving_cooperatively(std::function<void(bool)> on_answer);
+#endif
 
 /* ---------- prototypes/GAME_WINDOW.C */
 void scroll_inventory(short dy);

@@ -1406,11 +1406,31 @@ void do_menu_item_command(
 								{
 									really_wants_to_quit= true;
 								} else {
+#ifdef __EMSCRIPTEN__
+									// Web port (see ../../WEB_PORT_PLAN.md,
+									// M6c): the confirmation cannot return an
+									// answer here without blocking the frame
+									// loop, so hand the rest of this case to
+									// the dialog's completion callback. Every
+									// other path below leaves game_state
+									// untouched, so returning early is the
+									// whole of the deferral.
+									pause_game();
+									show_cursor();
+									quit_without_saving_cooperatively([](bool confirmed) {
+										hide_cursor();
+										resume_game();
+										if (confirmed)
+											set_game_state(_close_game);
+									});
+									return;
+#else
 									pause_game();
 									show_cursor();
 									really_wants_to_quit= quit_without_saving();
 									hide_cursor();
 									resume_game();
+#endif
 								}
 								break;
 							
