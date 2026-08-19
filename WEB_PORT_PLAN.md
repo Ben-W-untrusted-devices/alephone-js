@@ -3177,6 +3177,43 @@ overflow, the alSourcei parameter-whitelist trap, `AL_MAX_DISTANCE`/
         colour swatch inside Preferences, which is **still blocking**. It is a
         nested modal with a live-preview processing function, so it wants the
         same treatment as the crosshair dialog and its own test round.
+  - [x] **M6f — stop unconverted dialogs from being able to brick the game.**
+        Play testing found two more blocking dialogs (Graphics Setup →
+        Rendering Options, and Environment Settings → Script file), and the
+        first of them did real damage: it hung the tab *and* left the game
+        unable to start at all afterwards, surviving a reload and a cache
+        clear. Preferences live in IndexedDB, which clearing the cache does
+        not touch.
+      - `dialog::run()` now refuses to run under Emscripten, logging which
+        dialog needs converting and returning "cancelled" instead. The loop it
+        used to run cannot work in a browser by construction: it spins until
+        the dialog is dismissed, dismissing needs input, and input only
+        arrives once we return to the browser's event loop, which it never
+        does. Every converted dialog goes through `run_dialog_cooperatively()`
+        and `pump_once()` instead, so none of them are affected.
+      - This is a deliberate trade. An unconverted dialog now does nothing
+        (the feature is unavailable until converted) rather than taking the
+        page down -- and, critically, it can no longer half-run and write a
+        preference on the way out. Six separate hangs this session have been
+        this same bug, each found by a user losing a tab to it; they should
+        now surface as a log line naming the dialog instead.
+      - Added a **`?resetprefs` escape hatch** to `game.html`, plus a "Reset
+        preferences and reload" button shown whenever startup throws. A saved
+        preference that the engine cannot cope with was otherwise unrecoverable
+        without knowing to clear IndexedDB specifically.
+      - Pointer lock: the acquire handler now looks the canvas up when a
+        gesture arrives rather than using the one captured when it was armed,
+        since arming happens on the engine's first request and that element is
+        not guaranteed to still be the live canvas later.
+      - `w_color_picker::click()` (still blocking, now declining rather than
+        hanging) is reached from Preferences → Online: the two metaserver
+        colour swatches, `preferences.cpp:1027` and `:1031`.
+      - **Recommended next**: the systemic fix for this whole class is
+        ASYNCIFY, which would let `dialog::run()` yield to the browser and
+        return a value normally, making all ~20 remaining dialogs work
+        unchanged. It costs code size and some speed, so it wants measuring
+        rather than adopting blind -- but it is a better end state than
+        converting each dialog by hand as it is discovered.
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)
 
 ## Status

@@ -68,8 +68,13 @@ EM_JS(void, web_set_pointer_lock_wanted, (int wanted), {
         canvas.__a1PointerLockArmed = true;
         var acquire = function() {
             if (!Module.__a1PointerLockWanted) return;
+            // Look the canvas up now rather than using the one captured when
+            // this was armed: arming happens the first time the engine wants
+            // the lock, and the element it saw then is not guaranteed to still
+            // be the live canvas by the time a gesture arrives.
+            var canvas = Module.canvas || document.getElementById('canvas') || document.querySelector('canvas');
+            if (!canvas || !canvas.requestPointerLock) return;
             if (document.pointerLockElement === canvas) return;
-            if (!canvas.requestPointerLock) return;
             // Safari returns undefined here, other browsers a promise; a
             // rejection is normal (the gesture may have expired) and must not
             // surface as an unhandled rejection.
@@ -100,7 +105,7 @@ EM_JS(void, web_set_pointer_lock_wanted, (int wanted), {
         // both outcomes so a failure here is legible from the page's own log
         // rather than needing another round of guessing.
         document.addEventListener('pointerlockchange', function() {
-            Module.printErr('[pointerlock] ' + (document.pointerLockElement === canvas
+            Module.printErr('[pointerlock] ' + (document.pointerLockElement
                 ? 'acquired' : 'released'));
         });
         document.addEventListener('pointerlockerror', function() {

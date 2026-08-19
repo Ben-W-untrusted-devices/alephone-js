@@ -118,6 +118,19 @@
           Module.IDBFS.onAutoPersistStateChanged = (active) => {
             if (active) log("[persistence] saving to IndexedDB...");
           };
+          // Escape hatch: a bad saved preference can make the engine abort
+          // during startup, and because preferences live in IndexedDB rather
+          // than the cache, reloading -- or even clearing the browser cache --
+          // does not recover. Wiping the persisted directory before the first
+          // sync is the only way back in, so offer it up front via the URL.
+          if (new URLSearchParams(location.search).has("resetprefs")) {
+            log("[persistence] ?resetprefs given -- discarding saved preferences and saved games.");
+            await new Promise((resolve) => {
+              const req = indexedDB.deleteDatabase("/home/web_user/.alephone");
+              req.onsuccess = req.onerror = req.onblocked = () => resolve();
+            });
+          }
+
           log("Syncing preferences/saved games from IndexedDB...");
           await new Promise((resolve, reject) => {
             Module.FS.syncfs(true, (err) => (err ? reject(err) : resolve()));
@@ -153,6 +166,18 @@
       } catch (err) {
         log("Failed to start:", err instanceof Error ? err.message : String(err));
         console.error(err);
+        // Most ways of failing this late are a saved preference the engine
+        // cannot cope with, and those survive a reload. Say so, and make the
+        // recovery one click rather than something to be discovered.
+        const recover = document.createElement("button");
+        recover.textContent = "Reset preferences and reload";
+        recover.style.cssText = "display:block;margin:1rem 0;padding:0.5rem 1rem";
+        recover.addEventListener("click", () => {
+          const url = new URL(location.href);
+          url.searchParams.set("resetprefs", "1");
+          location.href = url.toString();
+        });
+        startButton.insertAdjacentElement("afterend", recover);
       } finally {
         startButton.textContent = "Start engine";
       }
