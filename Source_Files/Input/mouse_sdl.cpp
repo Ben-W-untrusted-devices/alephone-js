@@ -83,10 +83,29 @@ EM_JS(void, web_set_pointer_lock_wanted, (int wanted), {
         // ever trigger the request. Keyboard input counts as an activation
         // too, so the first movement key covers that case. Bound on the
         // document, since after a dialog the canvas may not be what has focus.
+        // Capture phase, deliberately: SDL's own Emscripten input handlers are
+        // bound on the canvas and the document and consume these events to
+        // drive the game, so a bubble-phase listener here is not reliably
+        // reached once gameplay has started -- which is exactly when the lock
+        // is wanted. Capturing runs this first and leaves the event otherwise
+        // untouched for SDL. (The file-picker prompt does the same thing for
+        // the same reason.)
         for (var i = 0; i < 5; i++) {
             var name = ['mousedown', 'click', 'pointerdown', 'keydown', 'touchstart'][i];
-            document.addEventListener(name, acquire);
+            document.addEventListener(name, acquire, true);
         }
+
+        // Whether the lock is actually granted is decided by the browser, and
+        // silently: a refusal looks identical to never having asked. Report
+        // both outcomes so a failure here is legible from the page's own log
+        // rather than needing another round of guessing.
+        document.addEventListener('pointerlockchange', function() {
+            Module.printErr('[pointerlock] ' + (document.pointerLockElement === canvas
+                ? 'acquired' : 'released'));
+        });
+        document.addEventListener('pointerlockerror', function() {
+            Module.printErr('[pointerlock] request refused by the browser');
+        });
     } catch (e) {
         // Best effort: never let this break input handling.
     }

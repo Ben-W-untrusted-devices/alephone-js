@@ -3138,6 +3138,45 @@ overflow, the alSourcei parameter-whitelist trap, `AL_MAX_DISTANCE`/
         `set_keyboard_controller_status()`, so there is nothing else to cover.
       - Updated README.md's feature table, which still described sound,
         rendering, input and saves as not started.
+  - [x] **M6e — the actual cause of the load-from-disk lockup.** The previous
+        round's deferral was correct but treated a symptom; the hang was a
+        blocking dialog further down, and it survived.
+      - `load_and_start_game()` calls `should_restore_game_networked()`, which
+        shows a blocking `dialog::run()` ("resume as single player or network
+        game?") whenever `saved_game_was_networked()` cannot answer. That
+        function answers only for the file the save list last handed out --
+        `return (saved_game == last_saved_game) ? last_saved_networked : UNONE`
+        -- and the browser file-picker path deliberately sets
+        `last_saved_networked = UNONE` and never touches `last_saved_game`.
+        So this hung on exactly one route into the game, "Load Other", while
+        loading from the save list was fine. That asymmetry is what identified
+        it.
+      - Skipped rather than converted: this build has networking compiled out
+        (`DISABLE_NETWORKING`), so "resume as a network game" is not an
+        outcome it could honour whichever way the user answered. Single player
+        is the only real answer, so it returns that directly.
+      - **Pointer lock listeners moved to the capture phase.** SDL's own
+        Emscripten input handlers are bound on the canvas and the document and
+        consume these events to drive the game, so a bubble-phase listener is
+        not reliably reached once gameplay has started -- which is precisely
+        when the lock is wanted, and precisely the difference between the
+        new-game path (a click lands before SDL is driving input) and the
+        continue-save path. Capturing runs the request first and leaves the
+        event otherwise untouched for SDL.
+      - Added `[pointerlock]` logging for acquire/release/refusal. Whether the
+        browser grants the lock is decided silently -- a refusal looks
+        identical to never having asked -- so this makes the next report
+        conclusive instead of another round of inference.
+      - **Swept the tree for other reachable blocking dialogs**, since this
+        class keeps surfacing one at a time. Most `dialog::run()` calls left
+        are the native halves of already-converted pairs, or unreachable here
+        (`HAVE_STEAM`, and `StatsManager::Finish()`, which is gated on an
+        upload thread that needs networking). Two were genuinely reachable:
+        `display_about_dialog()` -- converted, since it is one click from the
+        main menu -- and `w_color_picker::click()` (`sdl_widgets.cpp`), the
+        colour swatch inside Preferences, which is **still blocking**. It is a
+        nested modal with a live-preview processing function, so it wants the
+        same treatment as the crosshair dialog and its own test round.
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)
 
 ## Status

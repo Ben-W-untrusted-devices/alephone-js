@@ -2215,7 +2215,15 @@ static void display_about_dialog()
 {
 	force_system_colors(false);
 
+#ifdef __EMSCRIPTEN__
+	// Web port: heap-allocated and aliased, so it outlives this function --
+	// see the cooperative run at the end, and preferences.cpp for the fuller
+	// explanation of the pattern.
+	dialog *d_heap = new dialog();
+	dialog &d = *d_heap;
+#else
 	dialog d;
+#endif
 
 	tab_placer* tabs = new tab_placer();
 
@@ -2343,9 +2351,19 @@ static void display_about_dialog()
 
 	clear_screen();
 
+#ifdef __EMSCRIPTEN__
+	// Web port (see ../../WEB_PORT_PLAN.md, M6d): blocking dialog::run() hangs
+	// the tab -- same conversion as handle_preferences(). Reachable straight
+	// from the main menu, so worth doing rather than leaving as a trap.
+	run_dialog_cooperatively(d_heap, [d_heap](int) {
+		display_main_menu();
+		delete d_heap;
+	});
+#else
 	d.run();
 
 	display_main_menu();
+#endif
 }
 
 static void display_credits(
@@ -4252,7 +4270,24 @@ size_t should_restore_game_networked(FileSpecifier& file)
 	size_t theResult = saved_game_was_networked(file);
 	if (theResult != UNONE)
 		return theResult;
-	
+
+#ifdef __EMSCRIPTEN__
+	// Web port (see ../../WEB_PORT_PLAN.md, M6d): the dialog below is a
+	// blocking dialog::run(), which hangs the tab outright.
+	//
+	// It only appears when saved_game_was_networked() cannot answer, and that
+	// is exactly what happens for a save loaded from disk: it reports the
+	// player count only for the file the save list last handed out, and the
+	// browser file-picker path sets no such record. So this hung on precisely
+	// one route into the game -- "Load Other" -- while the save list was fine.
+	//
+	// Rather than make it cooperative, skip it: this build has networking
+	// compiled out entirely (DISABLE_NETWORKING), so "resume as a network
+	// game" is not an outcome it could honour whatever the user picked.
+	// Single player is the only real answer here.
+	return 0;
+#endif
+
         dialog d;
 
 	vertical_placer *placer = new vertical_placer;
