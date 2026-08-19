@@ -20,6 +20,7 @@
 */
 
 #include "preference_dialogs.h"
+#include "sdl_dialogs.h"
 #include "preferences.h"
 #include "binders.h"
 #include "OGL_Setup.h"
@@ -178,6 +179,86 @@ OpenGLDialog::~OpenGLDialog()
 	}
 
 }
+
+#ifdef __EMSCRIPTEN__
+namespace {
+	// Web port (see ../../WEB_PORT_PLAN.md, M6f): keeps the Pref objects alive
+	// alongside the BinderSet that points at them. In the blocking version
+	// they are stack locals in OpenGLPrefsByRunning(), which is safe only
+	// because it does not return until the dialog is finished. Cooperatively
+	// it returns immediately, so they have to outlive it -- the same
+	// dangling-binder problem the crosshair dialog hit.
+	struct A1_OpenGLPrefBinders {
+		BinderSet binders;
+		std::vector<std::shared_ptr<void>> prefs;
+
+		template <typename PrefType, typename ValueType, typename Widget, typename... Args>
+		void add (Widget* w, Args&&... args) {
+			auto p = std::make_shared<PrefType> (std::forward<Args> (args)...);
+			prefs.push_back (p);
+			binders.insert<ValueType> (w, p.get ());
+		}
+	};
+}
+
+void OpenGLDialog::OpenGLPrefsByRunningCooperatively (std::shared_ptr<OpenGLDialog> self)
+{
+	m_cancelWidget->set_callback (std::bind (&OpenGLDialog::Stop, this, false));
+	m_okWidget->set_callback (std::bind (&OpenGLDialog::Stop, this, true));
+
+	auto held = std::make_shared<A1_OpenGLPrefBinders> ();
+	auto& g = graphics_preferences->OGL_Configure;
+
+	held->add<BitPref, bool> (m_fogWidget, g.Flags, OGL_Flag_Fog);
+	held->add<BitPref, bool> (m_colourEffectsWidget, g.Flags, OGL_Flag_Fader);
+	held->add<BitPref, bool> (m_transparentLiquidsWidget, g.Flags, OGL_Flag_LiqSeeThru);
+	held->add<BitPref, bool> (m_3DmodelsWidget, g.Flags, OGL_Flag_3D_Models);
+	held->add<BitPref, bool> (m_blurWidget, g.Flags, OGL_Flag_Blur);
+	held->add<BitPref, bool> (m_bumpWidget, g.Flags, OGL_Flag_BumpMap);
+	held->add<BitPref, bool> (m_perspectiveWidget, g.Flags, OGL_Flag_MimicSW, true);
+
+	held->add<BoolPref, bool> (m_billboardWidget, g.BillboardXY);
+
+	held->add<BitPref, bool> (m_colourTheVoidWidget, g.Flags, OGL_Flag_VoidColor);
+	held->add<ColourPref, RGBColor> (m_voidColourWidget, g.VoidColor);
+
+	held->add<AnisotropyPref, int> (m_anisotropicWidget, g.AnisotropyLevel);
+
+	held->add<BoolPref, bool> (m_sRGBWidget, g.Use_sRGB);
+	held->add<BoolPref, bool> (m_useNPOTWidget, g.Use_NPOT);
+	held->add<BoolPref, bool> (m_vsyncWidget, g.WaitForVSync);
+
+	held->add<Int16Pref, int> (m_ephemeraQualityWidget, graphics_preferences->ephemera_quality);
+
+	held->add<FarFilterPref, int> (m_wallsFilterWidget, g.TxtrConfigList[OGL_Txtr_Wall].FarFilter);
+	held->add<FarFilterPref, int> (m_spritesFilterWidget, g.TxtrConfigList[OGL_Txtr_Inhabitant].FarFilter);
+
+	held->add<Int16Pref, int> (m_nearFiltersWidget[0], g.TxtrConfigList[OGL_Txtr_Wall].NearFilter);
+	held->add<Int16Pref, int> (m_nearFiltersWidget[1], g.TxtrConfigList[OGL_Txtr_Landscape].NearFilter);
+	held->add<Int16Pref, int> (m_nearFiltersWidget[2], g.TxtrConfigList[OGL_Txtr_Inhabitant].NearFilter);
+	held->add<Int16Pref, int> (m_nearFiltersWidget[3], g.TxtrConfigList[OGL_Txtr_WeaponsInHand].NearFilter);
+	held->add<Int16Pref, int> (m_nearFiltersWidget[4], g.TxtrConfigList[OGL_Txtr_HUD].NearFilter);
+
+	held->add<TexQualityPref, int> (m_textureQualityWidget[0], g.TxtrConfigList[0].MaxSize, 128);
+	held->add<TexQualityPref, int> (m_textureQualityWidget[1], g.TxtrConfigList[1].MaxSize, 256);
+	held->add<TexQualityPref, int> (m_textureQualityWidget[2], g.TxtrConfigList[2].MaxSize, 256);
+	held->add<TexQualityPref, int> (m_textureQualityWidget[3], g.TxtrConfigList[3].MaxSize, 256);
+	held->add<TexQualityPref, int> (m_textureQualityWidget[4], g.TxtrConfigList[4].MaxSize, 256);
+	held->add<TexQualityPref, int> (m_modelQualityWidget, g.ModelConfig.MaxSize, 256);
+
+	// Set initial values from prefs
+	held->binders.migrate_all_second_to_first ();
+
+	RunCooperatively ([held, self](bool result) {
+		if (result) {
+			// migrate prefs and save
+			held->binders.migrate_all_first_to_second ();
+			write_preferences ();
+		}
+		// `self` is the last reference to this dialog; it dies here.
+	});
+}
+#endif
 
 void OpenGLDialog::OpenGLPrefsByRunning ()
 {
@@ -577,6 +658,15 @@ public:
 	{
 		m_dialog.quit (result ? 0 : -1);
 	}
+
+#ifdef __EMSCRIPTEN__
+	virtual void RunCooperatively (std::function<void(bool)> on_done)
+	{
+		run_dialog_cooperatively (&m_dialog, [on_done](int result) {
+			on_done (result == 0);
+		});
+	}
+#endif
 
 	static void choose_generic_tab(void *arg);
 	static void choose_advanced_tab(void *arg);

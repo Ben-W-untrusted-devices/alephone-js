@@ -677,7 +677,11 @@ bool quit_without_saving(void)
 
 const int32 AllPlayableLevels = _single_player_entry_point | _multiplayer_carnage_entry_point | _multiplayer_cooperative_entry_point | _kill_the_man_with_the_ball_entry_point | _king_of_hill_entry_point | _rugby_entry_point | _capture_the_flag_entry_point;
 
+#ifdef __EMSCRIPTEN__
+void get_level_number_from_user(std::function<void(short)> on_result)
+#else
 short get_level_number_from_user(void)
+#endif
 {
 	// Get levels
 	vector<entry_point> levels;
@@ -689,7 +693,12 @@ short get_level_number_from_user(void)
 	}
 
 	// Create dialog
+#ifdef __EMSCRIPTEN__
+	dialog *d_heap = new dialog();
+	dialog &d = *d_heap;
+#else
 	dialog d;
+#endif
 	vertical_placer *placer = new vertical_placer;
 	if (vidmasterStringSetID != -1 && TS_IsPresent(vidmasterStringSetID) && TS_CountStrings(vidmasterStringSetID) > 0) {
 		// if we there's a stringset present for it, load the message from there
@@ -735,6 +744,25 @@ short get_level_number_from_user(void)
 	d.activate_widget(level_w);
 	d.set_widget_placer(placer);
 
+#ifdef __EMSCRIPTEN__
+	// Web port (see ../../WEB_PORT_PLAN.md, M6f): cooperative. `levels` is a
+	// stack local that the selection indexes into, so it is moved to the heap
+	// and kept alive by the completion.
+	auto levels_kept = std::make_shared<std::vector<entry_point>>(std::move(levels));
+	run_dialog_cooperatively(d_heap, [d_heap, level_w, levels_kept, on_result](int result) {
+		short level = NONE;
+		if (result == 0)		// OK
+			// Should do noncontiguous map files OK
+			level = (*levels_kept)[level_w->get_selection()].level_number;
+
+		delete d_heap;
+
+		// Redraw main menu
+		update_game_window();
+		if (on_result) on_result(level);
+	});
+}
+#else
 	// Run dialog
 	short level;
 	if (d.run() == 0)		// OK
@@ -747,6 +775,7 @@ short get_level_number_from_user(void)
 	update_game_window();
 	return level;
 }
+#endif
 
 const uint32 TICKS_BETWEEN_EVENT_POLL = 16; // 60 Hz
 

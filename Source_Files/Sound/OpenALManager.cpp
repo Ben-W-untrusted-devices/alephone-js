@@ -104,7 +104,10 @@ bool OpenALManager::Init(const AudioParameters& parameters) {
 			// would otherwise have been loaded in the block above; they
 			// stay null, see GenerateEffects()/GetLowPassFilter()). Fall
 			// back to a normal device instead of failing outright.
-			logError("ALC_SOFT_loopback extension is not supported, falling back to a normal (non-loopback) device"); //Should never be the case natively, as long as >= OpenAL 1.14
+			// Web port: logNote rather than logError -- this is the expected,
+			// working path under Emscripten, and logging it as an error made
+			// a normal startup look like a failure in the page's log.
+			logNote("ALC_SOFT_loopback extension is not supported, falling back to a normal (non-loopback) device"); //Should never be the case natively, as long as >= OpenAL 1.14
 			p_UsingLoopback = false;
 		}
 	}

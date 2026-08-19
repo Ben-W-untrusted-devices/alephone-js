@@ -21,6 +21,7 @@ Progress and design decisions are tracked in [WEB_PORT_PLAN.md](WEB_PORT_PLAN.md
 | Sound and music | Working | Emscripten's OpenAL has no `ALC_SOFT_loopback`, so the engine falls back to a normal device driven from the frame loop; the AudioContext is resumed on the first user gesture |
 | Keyboard and mouse input | Working | including mouse-look via pointer lock, which is acquired from a user gesture (browsers grant it no other way) |
 | Gamepad input | TBD | SDL2 has an Emscripten backend for it, but it has not been tested |
+| Attract mode (auto-playing demos) | TBD | the idle timer that starts a demo on the main menu is currently skipped -- it logs `[idle_game_state] auto-demo timer expired (skipped on web port)` and does nothing |
 | Save games and preferences | Working | persisted in IndexedDB, so they survive a reload; saves can also be exported to, and loaded from, real files via the browser's download and file-picker UI |
 | Networked multiplayer | Impossible | browsers have no raw TCP/UDP socket API at all, and no existing Aleph One client, server, or metaserver speaks WebSocket/WebRTC |
 

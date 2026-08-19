@@ -190,6 +190,65 @@ void w_env_select::select_item(dialog *parent)
 		items.push_back(env_item(*i, indent_level, true));
 	}
 
+#ifdef __EMSCRIPTEN__
+	// Web port (see ../../WEB_PORT_PLAN.md, M6f): cooperative, since
+	// dialog::run() cannot yield to the browser. Three things have to outlive
+	// this function as a result, and all three were stack locals: the dialog,
+	// the item list the selection indexes into, and the LOAD OTHER flag (which
+	// the button's own lambda writes, so it cannot simply be captured by
+	// value). The FileSpecifier for the LOAD OTHER path is heap-owned for the
+	// same reason -- ReadDialogCooperatively() writes to it after returning.
+	dialog *d_heap = new dialog();
+	dialog &d = *d_heap;
+	auto items_kept = std::make_shared<std::vector<env_item>>(std::move(items));
+	auto load_other = std::make_shared<bool>(false);
+
+	vertical_placer *placer = new vertical_placer;
+
+	placer->dual_add(new w_title(menu_title), d);
+	placer->add(new w_spacer(), true);
+	w_env_list *list_w = new w_env_list(*items_kept, item.GetPath(), &d);
+	placer->dual_add(list_w, d);
+	placer->add(new w_spacer(), true);
+
+	horizontal_placer* button_placer = new horizontal_placer;
+#ifndef MAC_APP_STORE
+	w_button* other_w = new w_button("LOAD OTHER", [load_other](void* p) { *load_other = true; dialog_cancel(p); }, &d);
+	button_placer->dual_add(other_w, d);
+#endif
+	button_placer->dual_add(new w_button("CANCEL", dialog_cancel, &d), d);
+	placer->add(button_placer, true);
+
+	d.activate_widget(list_w);
+	d.set_widget_placer(placer);
+
+	clear_screen();
+
+	run_dialog_cooperatively(d_heap, [this, d_heap, list_w, items_kept, load_other](int result) {
+		const bool wants_other = *load_other;
+		delete d_heap;
+
+		if (result == 0) { // Accepted
+			if (items_kept->size())
+				set_path((*items_kept)[list_w->get_selection()].spec.GetPath());
+
+			if (mCallback)
+				mCallback(this);
+			return;
+		}
+
+		if (wants_other) {
+			auto spec = std::make_shared<FileSpecifier>(get_path());
+			spec->ReadDialogCooperatively(type, nullptr, [this, spec](bool chose) {
+				if (!chose) return;
+				set_path(spec->GetPath());
+				if (mCallback)
+					mCallback(this);
+			});
+		}
+	});
+	return;
+#else
 	// Create dialog
 	dialog d;
 	vertical_placer *placer = new vertical_placer;
@@ -236,6 +295,7 @@ void w_env_select::select_item(dialog *parent)
 			}
 		}
 	}
+#endif
 }
 
 w_crosshair_display::w_crosshair_display() : surface(0)

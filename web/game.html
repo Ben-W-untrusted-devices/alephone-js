@@ -112,30 +112,54 @@
         // preferences synchronously very early in startup. See
         // WEB_PORT_PLAN.md, M4i.
         const persistentDataDir = "/home/web_user/.alephone";
+
+        // Escape hatch: a bad saved preference can make the engine abort during
+        // startup, and preferences live in IndexedDB rather than the cache, so
+        // reloading -- or even clearing the browser cache -- does not recover.
+        //
+        // This has to happen *before* the IDBFS mount below. deleteDatabase()
+        // does not force anything shut: it waits for existing connections, and
+        // fires 'blocked' if any remain. Mounting first opened one, which is
+        // why deleting afterwards silently did nothing (the previous attempt
+        // treated 'blocked' as success, so it reported a reset it had not done).
+        const wantsReset = new URLSearchParams(location.search).has("resetprefs");
+        if (wantsReset) {
+          log("[persistence] ?resetprefs given -- discarding saved preferences and saved games.");
+          const outcome = await new Promise((resolve) => {
+            const req = indexedDB.deleteDatabase(persistentDataDir);
+            req.onsuccess = () => resolve("deleted");
+            req.onerror = () => resolve("error");
+            req.onblocked = () => resolve("blocked");
+          });
+          log(`[persistence] reset ${outcome}.`);
+        }
+
         try {
           Module.FS.mkdir(persistentDataDir);
           Module.FS.mount(Module.IDBFS, { autoPersist: true }, persistentDataDir);
           Module.IDBFS.onAutoPersistStateChanged = (active) => {
             if (active) log("[persistence] saving to IndexedDB...");
           };
-          // Escape hatch: a bad saved preference can make the engine abort
-          // during startup, and because preferences live in IndexedDB rather
-          // than the cache, reloading -- or even clearing the browser cache --
-          // does not recover. Wiping the persisted directory before the first
-          // sync is the only way back in, so offer it up front via the URL.
-          if (new URLSearchParams(location.search).has("resetprefs")) {
-            log("[persistence] ?resetprefs given -- discarding saved preferences and saved games.");
-            await new Promise((resolve) => {
-              const req = indexedDB.deleteDatabase("/home/web_user/.alephone");
-              req.onsuccess = req.onerror = req.onblocked = () => resolve();
-            });
-          }
-
           log("Syncing preferences/saved games from IndexedDB...");
           await new Promise((resolve, reject) => {
             Module.FS.syncfs(true, (err) => (err ? reject(err) : resolve()));
           });
           log("IndexedDB sync complete -- saves will persist across reloads.");
+
+          // If deleting the database was blocked, the old preferences are now
+          // sitting in the filesystem regardless. Remove them directly so a
+          // reset always means a reset.
+          if (wantsReset) {
+            for (const name of Module.FS.readdir(persistentDataDir)) {
+              if (name === "." || name === "..") continue;
+              try {
+                Module.FS.unlink(`${persistentDataDir}/${name}`);
+              } catch {
+                // directories and anything already gone -- ignore
+              }
+            }
+            log("[persistence] cleared the persisted directory.");
+          }
         } catch (err) {
           log(
             "[persistence] IndexedDB unavailable, saves won't persist across reloads:",

@@ -1150,6 +1150,20 @@ public:
 		return result;
 	}
 
+#ifdef __EMSCRIPTEN__
+	// Web port (see ../../WEB_PORT_PLAN.md, M6f): cooperative counterpart of
+	// Run(). Everything that used to happen after run() returned moves into
+	// on_done. The FileDialog object owns m_dialog, so it has to outlive this
+	// call too -- callers heap-allocate it and destroy it from on_done.
+	void RunCooperatively(std::function<void(bool)> on_done) {
+		Layout();
+		run_dialog_cooperatively(&m_dialog, [on_done](int result) {
+			if (get_game_state() == _game_in_progress) update_game_window();
+			on_done(result == 0);
+		});
+	}
+#endif
+
 protected:
 	void Init(const FileSpecifier& dir, w_directory_browsing_list::SortOrder default_order, std::string filename) {
 		m_sort_by_w = new w_select(static_cast<size_t>(default_order), sort_by_labels);
@@ -1669,6 +1683,9 @@ private:
 };
 
 static bool confirm_save_choice(FileSpecifier & file);
+#ifdef __EMSCRIPTEN__
+static void confirm_save_choice_cooperatively(FileSpecifier& file, std::function<void(bool)> on_answer);
+#endif
 
 bool FileSpecifier::WriteDialog(Typecode type, const char *prompt, const char *default_name)
 {
@@ -1768,6 +1785,104 @@ bool FileSpecifier::WriteDialogAsync(Typecode type, char *prompt, char *default_
 {
 	return FileSpecifier::WriteDialog(type, prompt, default_name);
 }
+
+#ifdef __EMSCRIPTEN__
+// Web port (see ../../WEB_PORT_PLAN.md, M6f): callback-taking counterparts of
+// ReadDialog()/WriteDialog(). They cannot return a bool, because the answer
+// does not exist until the user has actually chosen -- which needs the browser
+// event loop, which means returning from here first.
+//
+// `this` is written before on_done fires, so the caller must keep the
+// FileSpecifier alive until then (heap-allocate it, or own it in the
+// completion's own captures) exactly as with the cooperative dialogs.
+void FileSpecifier::ReadDialogCooperatively(Typecode type, const char *prompt,
+                                            std::function<void(bool)> on_done)
+{
+	ReadFileDialog *d = new ReadFileDialog(*this, type, prompt);
+	d->RunCooperatively([this, d, on_done](bool accepted) {
+		if (accepted)
+			*this = d->GetFile();
+		delete d;
+		on_done(accepted);
+	});
+}
+
+void FileSpecifier::WriteDialogCooperatively(Typecode type, const char *prompt,
+                                             const char *default_name,
+                                             std::function<void(bool)> on_done)
+{
+	// The blocking version retries via `goto again` -- when the chosen name is
+	// empty, and when the overwrite confirmation is declined. Cooperatively
+	// that becomes a continuation that re-invokes itself, held in a shared_ptr
+	// so it stays alive across each round trip through the browser.
+	auto attempt = std::make_shared<std::function<void()>>();
+	*attempt = [this, type, prompt, default_name, on_done, attempt]() {
+		WriteFileDialog *d = new WriteFileDialog(*this, type, prompt, default_name);
+		d->RunCooperatively([this, d, on_done, attempt](bool accepted) {
+			if (!accepted)
+			{
+				delete d;
+				on_done(false);
+				return;
+			}
+			if (d->GetFilename().empty())
+			{
+				play_dialog_sound(DIALOG_ERROR_SOUND);
+				delete d;
+				(*attempt)();
+				return;
+			}
+			*this = d->GetPath();
+			delete d;
+			confirm_save_choice_cooperatively(*this, [on_done, attempt](bool confirmed) {
+				if (confirmed)
+					on_done(true);
+				else
+					(*attempt)();
+			});
+		});
+	};
+	(*attempt)();
+}
+#endif
+
+#ifdef __EMSCRIPTEN__
+// Web port (see ../../WEB_PORT_PLAN.md, M6f): cooperative twin of
+// confirm_save_choice() below. `file` is captured by reference because every
+// caller owns it for longer than this dialog lives (it is the FileSpecifier
+// being written to).
+static void confirm_save_choice_cooperatively(FileSpecifier& file, std::function<void(bool)> on_answer)
+{
+	if (!file.Exists())
+	{
+		on_answer(true);
+		return;
+	}
+
+	std::ostringstream oss;
+	oss << "'" << FileSpecifier::HideExtension(file.GetName()) << "' alredy exists.";
+
+	dialog *d = new dialog();
+	vertical_placer *placer = new vertical_placer;
+	placer->dual_add(new w_static_text(oss.str().c_str()), *d);
+	placer->dual_add(new w_static_text("Ok to overwrite?"), *d);
+	placer->add(new w_spacer(), true);
+
+	horizontal_placer *button_placer = new horizontal_placer;
+	w_button *default_button = new w_button("YES", dialog_ok, d);
+	button_placer->dual_add(default_button, *d);
+	button_placer->dual_add(new w_button("NO", dialog_cancel, d), *d);
+
+	placer->add(button_placer, true);
+	d->activate_widget(default_button);
+	d->set_widget_placer(placer);
+
+	run_dialog_cooperatively(d, [d, on_answer](int result) {
+		on_answer(result == 0);
+		delete d;
+	});
+}
+#endif
 
 static bool confirm_save_choice(FileSpecifier & file)
 {

@@ -1417,7 +1417,17 @@ static void rendering_options_dialog_demux(void* arg)
 			break;
 
 		case _opengl_acceleration:
+#ifdef __EMSCRIPTEN__
+		{
+			// Web port: hand ownership to the dialog's own continuation --
+			// Create()'s unique_ptr would otherwise be destroyed at the end of
+			// this statement, long before the user has finished with it.
+			std::shared_ptr<OpenGLDialog> d (OpenGLDialog::Create (theSelectedRenderer).release ());
+			d->OpenGLPrefsByRunningCooperatively (d);
+		}
+#else
 			OpenGLDialog::Create (theSelectedRenderer)->OpenGLPrefsByRunning ();
+#endif
 			break;
 
 		default:

@@ -41,6 +41,9 @@ void start_recording(void);
 void set_recording_saved_wad_data(const std::vector<byte>& saved_wad_data);
 
 bool find_replay_to_use(bool ask_user, FileSpecifier& File);
+#ifdef __EMSCRIPTEN__
+void find_replay_to_use_cooperatively(bool ask_user, FileSpecifier& File, std::function<void(bool)> on_done);
+#endif
 
 void set_recording_header_data(short number_of_players, short level_number, uint32 map_checksum,
 	short version, struct player_start_data *starts, struct game_data *game_information);
@@ -56,6 +59,11 @@ void initialize_keyboard_controller(void);
 /* true if it found it, false otherwise. always fills in vrefnum and dirid*/
 bool get_recording_filedesc(FileSpecifier& File);
 void move_replay(void);
+#ifdef __EMSCRIPTEN__
+#include <functional>
+// Web port: non-blocking counterpart -- see the definition.
+void move_replay_cooperatively(std::function<void()> on_done);
+#endif
 uint32 parse_keymap(void);
 
 bool setup_replay_from_random_resource(uint32 map_checksum);

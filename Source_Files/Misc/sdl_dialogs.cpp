@@ -2282,29 +2282,6 @@ bool dialog::pump_once(void)
 
 int dialog::run(bool intro_exit_sounds)
 {
-#ifdef __EMSCRIPTEN__
-	// Web port (see ../../WEB_PORT_PLAN.md, M6f): this loop cannot work in a
-	// browser. It spins until the dialog is dismissed, but dismissing it needs
-	// input, and input only arrives when we return to the browser's event loop
-	// -- which this never does. The page freezes, and the user's only way out
-	// is to kill the tab.
-	//
-	// Every dialog that matters has been converted to run_dialog_cooperatively()
-	// instead (see the header). The ones that have not are found the hard way,
-	// one hung tab at a time -- so rather than let an unconverted dialog take
-	// the page down, decline to run it and report which one. The feature is
-	// unavailable until it is converted, which is a bad outcome; hanging the
-	// tab, with no way back if the dialog also wrote a preference, is a worse
-	// one.
-	//
-	// Deliberately not a silent no-op: an unconverted dialog is a bug, and
-	// this is how it gets reported.
-	logError("dialog::run() is not available in the browser build -- this dialog "
-	         "needs converting to run_dialog_cooperatively(); treating as cancelled");
-	fprintf(stderr, "[dialog] refused to run a blocking dialog (would hang the page); "
-	                "treated as cancelled\n");
-	return -1; // as if cancelled
-#else
 	// Put dialog on screen
 	start(intro_exit_sounds);
 
@@ -2315,7 +2292,6 @@ int dialog::run(bool intro_exit_sounds)
 
 	// Remove dialog from screen
 	return finish(intro_exit_sounds);
-#endif
 }
 
 #ifdef __EMSCRIPTEN__

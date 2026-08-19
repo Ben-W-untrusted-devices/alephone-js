@@ -77,6 +77,7 @@ Feb 20, 2002 (Woody Zenfell):
 */
 
 #include "cseries.h"
+#include <functional>
 #include <string.h>
 #include <stdlib.h>
 
@@ -1158,6 +1159,18 @@ static struct special_flag_data special_flags[]=
  *  Get FileDesc for replay, ask user if desired
  */
 
+#ifdef __EMSCRIPTEN__
+// Web port (see ../../WEB_PORT_PLAN.md, M6f): cooperative counterpart. `file`
+// is written before on_done fires, so the caller must keep it alive.
+void find_replay_to_use_cooperatively(bool ask_user, FileSpecifier &file, std::function<void(bool)> on_done)
+{
+	if (ask_user)
+		file.ReadDialogCooperatively(_typecode_film, nullptr, on_done);
+	else
+		on_done(get_recording_filedesc(file));
+}
+#endif
+
 bool find_replay_to_use(bool ask_user, FileSpecifier &file)
 {
 	if (ask_user) {
@@ -1182,6 +1195,40 @@ bool get_recording_filedesc(FileSpecifier &File)
 /*
  *  Save film buffer to user-selected file
  */
+
+#ifdef __EMSCRIPTEN__
+// Web port (see ../../WEB_PORT_PLAN.md, M6f): cooperative counterpart, since
+// the destination is not known until the user has chosen it and that needs the
+// browser's event loop. on_done runs once the copy has happened (or the user
+// cancelled), so the caller's own follow-up work can go there.
+void move_replay_cooperatively(std::function<void()> on_done)
+{
+	auto src_file = std::make_shared<FileSpecifier>();
+	if (!get_recording_filedesc(*src_file))
+	{
+		on_done();
+		return;
+	}
+
+	// Heap-owned: WriteDialogCooperatively() writes to this after returning.
+	auto dst_file = std::make_shared<FileSpecifier>();
+	char prompt[256], default_name[256];
+	dst_file->WriteDialogCooperatively(
+		_typecode_film,
+		getcstr(prompt, strPROMPTS, _save_replay_prompt),
+		getcstr(default_name, strFILENAMES, filenameMARATHON_RECORDING),
+		[src_file, dst_file, on_done](bool chose) {
+			if (chose)
+			{
+				dst_file->CopyContents(*src_file);
+				int error = dst_file->GetError();
+				if (error)
+					alert_user(infoError, strERRORS, fileError, error);
+			}
+			on_done();
+		});
+}
+#endif
 
 void move_replay(void)
 {

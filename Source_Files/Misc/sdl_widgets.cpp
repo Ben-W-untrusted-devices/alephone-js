@@ -1121,7 +1121,12 @@ private:
 void w_color_picker::click(int, int)
 {
 	if (!enabled) return;
+#ifdef __EMSCRIPTEN__
+	dialog *d_heap = new dialog();
+	dialog &d = *d_heap;
+#else
 	dialog d;
+#endif
 	
 	vertical_placer *placer = new vertical_placer;
 	placer->dual_add(new w_title("CHOOSE A COLOR"), d);
@@ -1159,6 +1164,29 @@ void w_color_picker::click(int, int)
 	d.set_widget_placer(placer);
 	d.set_processing_function(w_color_picker::update_color(red_w, green_w, blue_w, &m_color.red, &m_color.green, &m_color.blue));
 
+#ifdef __EMSCRIPTEN__
+	// Web port (see ../../WEB_PORT_PLAN.md, M6f): cooperative, as above.
+	// old_color is captured by value -- it is a stack local here, and the
+	// cancel path that restores it now runs long after this function has
+	// returned. The processing function's pointers into m_color stay valid
+	// because they point into this widget, which outlives the nested dialog.
+	run_dialog_cooperatively(&d, [this, d_heap, red_w, green_w, blue_w, old_color](int result) {
+		if (result == 0)
+		{
+			m_color.red = red_w->get_selection() << 12;
+			m_color.green = green_w->get_selection() << 12;
+			m_color.blue = blue_w->get_selection() << 12;
+
+			dirty = true;
+			get_owning_dialog()->draw_dirty_widgets();
+		}
+		else
+		{
+			m_color = old_color;
+		}
+		delete d_heap;
+	});
+#else
 	if (d.run() == 0)
 	{
 		m_color.red = red_w->get_selection() << 12;
@@ -1172,6 +1200,7 @@ void w_color_picker::click(int, int)
 	{
 		m_color = old_color;
 	}
+#endif
 }
 
 void w_color_picker::draw(SDL_Surface *s) const
@@ -2385,6 +2414,32 @@ void w_select_popup::set_selection (int value)
 void w_select_popup::gotSelected ()
 {
 	if (labels.size () > 1) {
+#ifdef __EMSCRIPTEN__
+		// Web port (see ../../WEB_PORT_PLAN.md, M6f): dialog::run() blocks the
+		// browser's event loop, so this is driven cooperatively instead. The
+		// dialog is heap-allocated because this function returns as soon as it
+		// is registered, long before the user picks anything -- and the work
+		// that used to follow run() moves into the completion callback, action
+		// included, so it still happens after the choice rather than before.
+		// This one matters out of proportion to its size: every popup menu in
+		// Preferences comes through here.
+		dialog *d_heap = new dialog();
+		vertical_placer *placer = new vertical_placer;
+
+		w_string_list* string_list_w = new w_string_list (labels, d_heap, selection >= 0 ? selection : 0);
+		placer->dual_add (string_list_w, *d_heap);
+		d_heap->activate_widget(string_list_w);
+
+		d_heap->set_widget_placer(placer);
+		run_dialog_cooperatively(d_heap, [this, d_heap, string_list_w](int result) {
+			if (result == 0)
+				set_selection (string_list_w->get_selection ());
+			delete d_heap;
+			if (action)
+				action (arg);
+		});
+		return;
+#else
 		dialog theDialog;
 		vertical_placer *placer = new vertical_placer;
 		
@@ -2395,6 +2450,7 @@ void w_select_popup::gotSelected ()
 		theDialog.set_widget_placer(placer);
 		if (theDialog.run () == 0)
 			set_selection (string_list_w->get_selection ());
+#endif
 	}
 	
 	if (action)
@@ -2427,12 +2483,24 @@ w_file_chooser::proc()
 {
 	if(enabled)
 	{
+#ifdef __EMSCRIPTEN__
+		// Web port (see ../../WEB_PORT_PLAN.md, M6f): cooperative. `file` is a
+		// member of this widget, which outlives the dialog, so it can still be
+		// written directly.
+		file.ReadDialogCooperatively(typecode, dialog_prompt, [this](bool chose) {
+			if (!chose) return;
+			update_filename();
+			if (m_callback)
+				m_callback ();
+		});
+#else
 		if(file.ReadDialog(typecode, dialog_prompt))
 		{
 			update_filename();
 			if (m_callback)
 				m_callback ();
 		}
+#endif
 	}	
 }
 

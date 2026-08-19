@@ -77,6 +77,24 @@ void StatsManager::Finish()
 {
 	if (busy_)
 	{
+#ifdef __EMSCRIPTEN__
+		// Web port (see ../../WEB_PORT_PLAN.md, M6f): cooperative, like every
+		// other dialog here. Reaching this at all needs a Lua stats script, so
+		// stock scenarios never do -- but a blocking dialog whose exit
+		// condition is an upload thread would hang forever in a build with no
+		// threads, which is a bad thing to leave lying in wait.
+		dialog *d = new dialog();
+		vertical_placer* placer = new vertical_placer;
+		placer->dual_add(new w_static_text("Uploading stats"), *d);
+		placer->add(new w_spacer, true);
+		w_button *button = new w_button("CANCEL", dialog_cancel, d);
+		placer->dual_add(button, *d);
+		d->set_widget_placer(placer);
+		d->activate_widget(button);
+
+		d->set_processing_function(std::bind(&StatsManager::CheckForDone, this, std::placeholders::_1));
+		run_dialog_cooperatively(d, [d](int) { delete d; });
+#else
 		dialog d;
 		vertical_placer* placer = new vertical_placer;
 		placer->dual_add(new w_static_text("Uploading stats"), d);
@@ -88,6 +106,7 @@ void StatsManager::Finish()
 		
 		d.set_processing_function(std::bind(&StatsManager::CheckForDone, this, std::placeholders::_1));
 		d.run();
+#endif
 	}
 	else
 	{

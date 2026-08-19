@@ -57,6 +57,7 @@ March 18, 2002 (Br'fin (Jeremy Parsons)):
 
 #include <errno.h>
 #include <string>
+#include <functional>
 #ifndef NO_STD_NAMESPACE
 using std::string;
 using std::vector;
@@ -279,6 +280,12 @@ public:
 	// Write dialog box for savegames (must be asynchronous, allowing the sound
 	// to continue in the background)
 	bool WriteDialogAsync(Typecode Type, char *Prompt=NULL, char *DefaultName=NULL);
+#ifdef __EMSCRIPTEN__
+	// Web port: non-blocking counterparts -- see the definitions. The caller
+	// must keep this FileSpecifier alive until on_done fires.
+	void ReadDialogCooperatively(Typecode Type, const char *Prompt, std::function<void(bool)> on_done);
+	void WriteDialogCooperatively(Typecode Type, const char *Prompt, const char *DefaultName, std::function<void(bool)> on_done);
+#endif
 	
 	// Check on whether a file exists, and its type
 	bool Exists();

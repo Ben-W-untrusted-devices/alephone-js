@@ -22,6 +22,8 @@
 #ifndef PREFERENCE_DIALOGS_H
 #define PREFERENCE_DIALOGS_H
 
+#include <memory>
+#include <functional>
 #include "shared_widgets.h"
 #include "OGL_Setup.h"
 
@@ -33,12 +35,24 @@ public:
 
 	void OpenGLPrefsByRunning ();
 
+#ifdef __EMSCRIPTEN__
+	// Web port (see ../../WEB_PORT_PLAN.md, M6f): non-blocking counterpart.
+	// It takes a shared_ptr to itself because Create() hands back a unique_ptr
+	// that the caller would otherwise destroy at the end of the statement --
+	// fine when OpenGLPrefsByRunning() blocks until the dialog is finished,
+	// fatal when it returns immediately.
+	void OpenGLPrefsByRunningCooperatively (std::shared_ptr<OpenGLDialog> self);
+#endif
+
 	virtual ~OpenGLDialog ();
 protected:
 	OpenGLDialog ();
 	
 	virtual bool Run () = 0;
 	virtual void Stop (bool result) = 0;
+#ifdef __EMSCRIPTEN__
+	virtual void RunCooperatively (std::function<void(bool)> on_done) = 0;
+#endif
 	
 	ButtonWidget*		m_cancelWidget;
 	ButtonWidget*		m_okWidget;

@@ -2537,6 +2537,17 @@ static void handle_replay( /* This is gross. */
 extern bool is_saved_game_replay();
 
 // ZZZ: some modifications to use generalized game-startup
+#ifdef __EMSCRIPTEN__
+// Web port (see ../../WEB_PORT_PLAN.md, M6f): begin_game() asks the user two
+// questions that can no longer be answered synchronously -- which level to
+// start at (cheat start), and which film to replay. Rather than restructure
+// the whole function around two possible suspension points, ask the question,
+// stash the answer here, and re-enter begin_game(). Re-entry is safe: every
+// statement above the switch is local initialisation plus clear_game_error().
+static short a1_pending_cheat_level = NONE;
+static FileSpecifier* a1_pending_replay_file = nullptr;
+#endif
+
 static bool begin_game(
 	short user,
 	bool cheat)
@@ -2618,7 +2629,24 @@ static bool begin_game(
 #endif
 #endif
 						
+#ifdef __EMSCRIPTEN__
+						if (a1_pending_replay_file == nullptr)
+						{
+							auto chosen = std::make_shared<FileSpecifier>();
+							find_replay_to_use_cooperatively(cheat, *chosen, [user, cheat, chosen](bool chose) {
+								if (!chose) { display_main_menu(); return; }
+								a1_pending_replay_file = chosen.get();
+								const bool started = begin_game(user, cheat);
+								a1_pending_replay_file = nullptr;
+								if (!started) display_main_menu();
+							});
+							return true; /* deferred -- the continuation decides */
+						}
+						ReplayFile = *a1_pending_replay_file;
+						success = true;
+#else
 						success= find_replay_to_use(cheat, ReplayFile);
+#endif
 						if(success)
 						{
 							if(!get_map_file().Exists())
@@ -2715,8 +2743,23 @@ static bool begin_game(
 		case _single_player:
 			if(cheat)
 			{
+#ifdef __EMSCRIPTEN__
+				if (a1_pending_cheat_level == NONE)
+				{
+					get_level_number_from_user([user](short level) {
+						if (level == NONE) { display_main_menu(); return; } /* Cancelled */
+						a1_pending_cheat_level = level;
+						const bool started = begin_game(user, true);
+						a1_pending_cheat_level = NONE;
+						if (!started) display_main_menu();
+					});
+					return true; /* deferred -- the continuation decides */
+				}
+				entry.level_number = a1_pending_cheat_level;
+#else
 				entry.level_number= get_level_number_from_user();
 				if(entry.level_number==NONE) success= false; /* Cancelled */
+#endif
 			} else {
 				entry.level_number= 0;
 			}
@@ -3214,9 +3257,18 @@ static void handle_save_film(
 {
 	force_system_colors(false);
 	show_cursor(); // JTP: Hidden by force_system_colors
+#ifdef __EMSCRIPTEN__
+	// Web port (see ../../WEB_PORT_PLAN.md, M6f): the file dialog no longer
+	// blocks, so everything that used to follow it moves into the completion.
+	move_replay_cooperatively([]() {
+		hide_cursor(); // JTP: Will be shown by display_main_menu
+		display_main_menu();
+	});
+#else
 	move_replay();
 	hide_cursor(); // JTP: Will be shown by display_main_menu
 	display_main_menu();
+#endif
 }
 
 static void next_game_screen(

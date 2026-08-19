@@ -303,7 +303,13 @@ void set_game_focus_gained();
 
 /* ---------- prototypes/INTERFACE_MACINTOSH.C */
 void do_preferences(void);
+#ifdef __EMSCRIPTEN__
+// Web port: the level chooser cannot return a value synchronously -- see the
+// definition in shell.cpp.
+void get_level_number_from_user(std::function<void(short)> on_result);
+#else
 short get_level_number_from_user(void);
+#endif
 void toggle_menus(bool game_started);
 
 // Should return NONE if user cancels, 0 for single player, or 1 for multiplayer.

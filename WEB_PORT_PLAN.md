@@ -3214,6 +3214,56 @@ overflow, the alSourcei parameter-whitelist trap, `AL_MAX_DISTANCE`/
         unchanged. It costs code size and some speed, so it wants measuring
         rather than adopting blind -- but it is a better end state than
         converting each dialog by hand as it is discovered.
+  - [x] **M6g — converted every remaining reachable blocking dialog.**
+        Reverted M6f's `dialog::run()` refusal, which turned an unconverted
+        dialog into a silently dead feature; that was the wrong call and it
+        encoded the shortfall into the product rather than fixing it.
+      - Built an exact inventory first, by walking each file's preprocessor
+        state down to every `run()` call rather than eyeballing it -- most
+        remaining calls turned out to be the native halves of already-converted
+        pairs, and two of the ones that looked live were behind `HAVE_NFD` and
+        `FILM_EXPORT`.
+      - Converted: `w_select_popup::gotSelected` (every popup menu in
+        Preferences), `w_color_picker::click`, `w_env_select::select_item`
+        (including its LOAD OTHER path), `w_file_chooser::proc`,
+        `FileDialog::Run` (via `ReadDialogCooperatively`/
+        `WriteDialogCooperatively`, with the write path's retry loop and
+        overwrite confirmation rebuilt as a self-scheduling continuation),
+        `SdlOpenGLDialog` (Rendering Options), `move_replay`,
+        `get_level_number_from_user`, `find_replay_to_use`, and
+        `StatsManager::Finish`.
+      - Two of these needed ownership changes beyond the usual heap-allocated
+        dialog. `OpenGLDialog::Create()` hands back a `unique_ptr` the caller
+        destroys at the end of the statement -- fine while the dialog blocks,
+        fatal once it returns immediately -- so ownership now passes into the
+        dialog's own continuation. And `OpenGLPrefsByRunning()` binds ~25
+        preferences through stack-local `Pref` objects, the same dangling-binder
+        shape the crosshair dialog hit; they are now heap-owned and kept alive
+        by the completion.
+      - `begin_game()` asks two questions that cannot be answered
+        synchronously (which level to cheat-start on, which film to replay).
+        Rather than restructure it around two suspension points, the answer is
+        stashed and `begin_game()` re-entered -- safe because everything above
+        its switch is local initialisation and `clear_game_error()`.
+      - **Not converted**: `ScenarioChooser::run()`. It is not a `dialog` --
+        it creates its own SDL window and event loop inside
+        `initialize_application()`, before the main loop exists -- so it needs
+        startup restructured rather than the dialog machinery. It is only
+        reached with more than one scenario present, which the single-folder
+        upload cannot currently produce. Recorded in TO_TEST.md.
+      - Fixed `?resetprefs`, which worked in Chrome but not Safari: it deleted
+        the IndexedDB database *after* mounting IDBFS, and `deleteDatabase()`
+        does not force existing connections shut -- it fires `blocked`, which
+        the code treated as success and reported a reset it had not performed.
+        The delete now happens before the mount, and the persisted directory is
+        cleared afterwards as a fallback.
+      - Added **TO_TEST.md**: a manual checklist covering every converted
+        dialog, the renderer features that have no automated coverage, and the
+        browser-specific behaviour. Nothing here can be tested without a real
+        browser and real game data, so the checklist is the coverage.
+      - Downgraded the `ALC_SOFT_loopback` fallback from `logError` to
+        `logNote` -- it is the expected, working path here, and logging it as
+        an error made a healthy startup read as a failure.
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)
 
 ## Status
