@@ -55,7 +55,7 @@
 EM_JS(void, web_set_pointer_lock_wanted, (int wanted), {
     try {
         Module.__a1PointerLockWanted = !!wanted;
-        var canvas = Module.canvas || document.getElementById('canvas');
+        var canvas = Module.canvas || document.getElementById('canvas') || document.querySelector('canvas');
         if (!canvas) return;
 
         if (!wanted) {
@@ -76,8 +76,17 @@ EM_JS(void, web_set_pointer_lock_wanted, (int wanted), {
             var pending = canvas.requestPointerLock();
             if (pending && pending.catch) pending.catch(function() {});
         };
-        canvas.addEventListener('mousedown', acquire);
-        canvas.addEventListener('click', acquire);
+        // Listen for more than a canvas click. Whether a click happens *after*
+        // the engine asks for the lock depends on how gameplay was entered:
+        // starting a new game leaves one, but loading a saved game ends on the
+        // dialog's own click and goes straight into play, so nothing would
+        // ever trigger the request. Keyboard input counts as an activation
+        // too, so the first movement key covers that case. Bound on the
+        // document, since after a dialog the canvas may not be what has focus.
+        for (var i = 0; i < 5; i++) {
+            var name = ['mousedown', 'click', 'pointerdown', 'keydown', 'touchstart'][i];
+            document.addEventListener(name, acquire);
+        }
     } catch (e) {
         // Best effort: never let this break input handling.
     }

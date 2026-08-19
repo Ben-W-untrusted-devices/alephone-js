@@ -16,11 +16,12 @@ Progress and design decisions are tracked in [WEB_PORT_PLAN.md](WEB_PORT_PLAN.md
 | --- | --- | --- |
 | Builds to WebAssembly (`emmake make`) | Working | produces a real `alephone.wasm`; `main()` runs in a real browser tab and initializes SDL2 |
 | Game data loading (drag-and-drop upload) | Working | browsers have no filesystem to scan, so this replaces the native file dialogs; uploaded files are written into the engine's in-browser filesystem where it expects to find them |
-| Sound | TBD | the engine's existing OpenAL loopback design already matches how Web Audio wants to be driven, but isn't wired up yet |
-| Hardware-accelerated rendering (OpenGL/WebGL) | TBD | the existing renderer uses legacy fixed-function GL, which needs rewriting for WebGL |
-| Software rendering | TBD | not started; being considered as an alternative to a WebGL rewrite |
-| Keyboard / mouse / gamepad input | TBD | SDL2 has a real Emscripten backend for this, but it isn't verified end to end yet |
-| Save games and preferences | TBD | not started |
+| Software rendering | Working | the default, and the fallback whenever a WebGL context cannot be created |
+| Hardware-accelerated rendering (OpenGL/WebGL) | Working | opt-in (`./web/build-engine.sh --opengl`, then Preferences → Graphics). Runs on WebGL 1.0 through Emscripten's legacy GL emulation, with this port supplying what that emulation leaves out: alpha test, user clip planes, and three legacy GLSL built-ins it rewrites incorrectly. Bump mapping, 3D models and S3TC textures are not enabled |
+| Sound and music | Working | Emscripten's OpenAL has no `ALC_SOFT_loopback`, so the engine falls back to a normal device driven from the frame loop; the AudioContext is resumed on the first user gesture |
+| Keyboard and mouse input | Working | including mouse-look via pointer lock, which is acquired from a user gesture (browsers grant it no other way) |
+| Gamepad input | TBD | SDL2 has an Emscripten backend for it, but it has not been tested |
+| Save games and preferences | Working | persisted in IndexedDB, so they survive a reload; saves can also be exported to, and loaded from, real files via the browser's download and file-picker UI |
 | Networked multiplayer | Impossible | browsers have no raw TCP/UDP socket API at all, and no existing Aleph One client, server, or metaserver speaks WebSocket/WebRTC |
 
 # Download

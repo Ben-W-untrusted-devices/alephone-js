@@ -3102,6 +3102,42 @@ overflow, the alSourcei parameter-whitelist trap, `AL_MAX_DISTANCE`/
         alongside SDL's attempt rather than replacing it -- where SDL already
         succeeds it finds the lock held and does nothing -- and it re-acquires
         after the browser drops the lock, which SDL does not retry on its own.
+  - [x] **M6d — a crash-on-start, a load lockup, and the rest of pointer lock.**
+      - **`TypeError: Cannot read properties of undefined (reading
+        'getParameter')` out of `change_screen_mode()`.** `SDL_GL_CreateContext`'s
+        return value was discarded at both of its call sites, with
+        `context_created` set regardless -- so when context creation actually
+        failed, every GL call afterwards ran with no context. Natively that is
+        a soft failure; in a browser the first `glGetString()` throws straight
+        out of the GL bindings and takes down `main()` before the menu
+        appears. Both sites now check, and fall back to the software renderer
+        the same way every other GL shortcoming already does. (The trigger was
+        almost certainly the GPU process being left unhappy by the lockup
+        below -- but the engine should degrade, not die, and it now does.)
+      - **Loading a saved game from disk locked up both browsers.** The file
+        picker's completion runs from a `FileReader` callback -- an arbitrary
+        JS task, outside the frame loop -- and from there it went on to load
+        and start an entire game. That re-enters engine code which assumes it
+        is running from the per-frame tick, since both the cooperative dialog
+        stack and the chapter-screen state machine live there. The result is
+        now recorded and picked up by `update_pending_file_pick()` on the next
+        frame, which is the same deferral every other asynchronous browser
+        callback in this port already uses.
+      - The picker's "click anywhere" prompt was a small banner above the
+        canvas and easy to miss -- and missing it looks exactly like a hang,
+        since nothing happens until it is clicked. It now covers the viewport.
+      - **Pointer lock still missed "Continue Saved Game".** Whether a click
+        happens *after* the engine asks for the lock depends on how gameplay
+        was entered: starting a new game leaves one, but loading a save ends
+        on the dialog's own click and goes straight into play, so nothing ever
+        triggered the request. The listener now covers keyboard and touch as
+        well as clicks, and is bound on the document rather than the canvas
+        (which may not hold focus after a dialog), so the first movement key
+        takes the lock. Checked the rest of the engine for other entry points
+        while there: `enter_mouse`/`exit_mouse` are reached only through
+        `set_keyboard_controller_status()`, so there is nothing else to cover.
+      - Updated README.md's feature table, which still described sound,
+        rendering, input and saves as not started.
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)
 
 ## Status

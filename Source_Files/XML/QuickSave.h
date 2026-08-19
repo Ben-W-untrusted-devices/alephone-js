@@ -77,6 +77,9 @@ bool delete_quick_save(QuickSave& save);
 // keep it alive until then (e.g. heap-allocated), since this function
 // itself returns immediately.
 void load_quick_save_dialog(FileSpecifier& saved_game, std::function<void(bool)> on_result);
+// Web port: runs a completed file-picker result on the frame loop rather than
+// in the browser callback that produced it -- see the definition.
+void update_pending_file_pick(void);
 #else
 bool load_quick_save_dialog(FileSpecifier& saved_game);
 #endif

@@ -72,6 +72,7 @@
 
 #include "resource_manager.h"
 #include "sdl_dialogs.h"
+#include "QuickSave.h"
 #include "sdl_fonts.h"
 #include "sdl_widgets.h"
 
@@ -770,6 +771,12 @@ static void main_event_loop_iteration(short game_state)
 	// callback instead). A no-op on native (Tick() itself checks
 	// p_UsingLoopback) and before OpenALManager::Init() has run.
 	if (OpenALManager::Get()) OpenALManager::Get()->Tick();
+
+	// Web port (see ../../WEB_PORT_PLAN.md, M6d): a finished file-picker
+	// result is handed over here rather than run from the browser callback
+	// that produced it, so that loading a saved game happens on the frame
+	// loop like every other path into the engine.
+	update_pending_file_pick();
 
 	// Web port (see ../../WEB_PORT_PLAN.md, M4c-ii): while a dialog is being
 	// driven cooperatively (see sdl_dialogs.h/.cpp), it needs exclusive

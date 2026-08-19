@@ -390,12 +390,20 @@ EM_JS(void, web_open_file_picker, (), {
         Module.__a1FileInput = input;
     }
     if (!Module.__a1FilePickerPrompt) {
+        // A small banner above the canvas was reported as easy to miss, and
+        // missing it looks exactly like the game having hung -- nothing
+        // happens until it is clicked. Cover the whole viewport instead, so
+        // the next click anywhere is both the acknowledgement and the gesture
+        // the file picker needs.
         var prompt = document.createElement("div");
-        prompt.textContent = "Click anywhere to choose a save file to load...";
-        prompt.style.cssText = "position:fixed;top:1rem;left:50%;transform:translateX(-50%);"
-            + "background:#222;color:#fff;padding:0.75rem 1.5rem;border-radius:6px;"
-            + "z-index:2147483647;font:14px system-ui,sans-serif;cursor:pointer;"
-            + "display:none;";
+        prompt.style.cssText = "position:fixed;inset:0;z-index:2147483647;"
+            + "background:rgba(0,0,0,0.72);color:#fff;cursor:pointer;"
+            + "display:none;align-items:center;justify-content:center;"
+            + "font:600 24px/1.5 system-ui,sans-serif;text-align:center;"
+            + "padding:2rem;";
+        prompt.innerHTML = "<div>Click anywhere to choose a saved game"
+            + "<div style=\"font:400 15px/1.6 system-ui,sans-serif;opacity:0.75;margin-top:0.75rem\">"
+            + "Your browser only opens the file picker in response to a click.</div></div>";
         document.body.appendChild(prompt);
         document.addEventListener("pointerdown", function() {
             if (prompt.style.display !== "none") {
@@ -405,19 +413,43 @@ EM_JS(void, web_open_file_picker, (), {
         }, true);
         Module.__a1FilePickerPrompt = prompt;
     }
-    Module.__a1FilePickerPrompt.style.display = "block";
+    Module.__a1FilePickerPrompt.style.display = "flex";
 });
 
 static const char* kWebUploadPath = "/tmp/web_upload.sgaA";
 
-namespace { std::function<void(bool)> g_file_picker_callback; }
+namespace {
+    std::function<void(bool)> g_file_picker_callback;
+    // 0 = nothing pending, 1 = a file was picked, -1 = cancelled.
+    int g_pending_file_pick = 0;
+}
 
 extern "C" EMSCRIPTEN_KEEPALIVE void web_on_file_picked(int success)
 {
+    // Web port (see ../../WEB_PORT_PLAN.md, M6d): deliberately does *not* run
+    // the callback here. This is invoked from a FileReader completion -- an
+    // arbitrary JS task, outside the frame loop -- and the callback goes on to
+    // load and start an entire game, which re-enters engine code that assumes
+    // it is running from the normal per-frame tick (the cooperative dialog
+    // stack and the chapter-screen state machine both live there). Doing that
+    // from a foreign task locked the tab up in both browsers. Record the
+    // result and let update_pending_file_pick() pick it up on the next frame,
+    // which is the same deferral every other asynchronous browser callback in
+    // this port already uses.
+    g_pending_file_pick = (success != 0) ? 1 : -1;
+}
+
+void update_pending_file_pick(void)
+{
+    if (!g_pending_file_pick) return;
+
+    const bool picked = (g_pending_file_pick == 1);
+    g_pending_file_pick = 0;
+
     auto callback = std::move(g_file_picker_callback);
     g_file_picker_callback = nullptr;
     if (callback)
-        callback(success != 0);
+        callback(picked);
 }
 #endif
 

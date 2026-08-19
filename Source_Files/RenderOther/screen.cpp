@@ -963,9 +963,24 @@ static void change_screen_mode(int width, int height, int depth, bool nogl, bool
 	if (main_screen != NULL && !nogl && screen_mode.acceleration == _opengl_acceleration)
 	{
 		// see if we can actually run shaders
+		// Web port (see ../../WEB_PORT_PLAN.md, M6c): this return value used to
+		// be discarded, with context_created set regardless. When context
+		// creation actually fails -- which a browser will do, for instance
+		// after a GPU process crash, or once a tab is holding too many live
+		// WebGL contexts -- every GL call after this point then runs with no
+		// context at all. That is not a soft failure here: the first
+		// glGetString() throws a TypeError straight out of the GL bindings and
+		// takes down main() before the main menu ever appears. Treat it as "no
+		// OpenGL" and let the existing fallback below bring up the software
+		// renderer, which is what happens for every other GL shortcoming.
+		bool gl_available = context_created;
 		if (!context_created) {
-			SDL_GL_CreateContext(main_screen);
-			context_created = true;
+			gl_available = (SDL_GL_CreateContext(main_screen) != NULL);
+			context_created = gl_available;
+			if (!gl_available) {
+				logWarning("Could not create an OpenGL context (%s)", SDL_GetError());
+				fprintf(stderr, "WARNING: Could not create an OpenGL context (%s)\n", SDL_GetError());
+			}
 		}
 #if defined (__WIN32__) && (HAVE_OPENGL)
 		glewInit();
@@ -979,9 +994,9 @@ static void change_screen_mode(int width, int height, int depth, bool nogl, bool
 		// here (see OGL_Emscripten_Compat.h, which maps this engine's ARB
 		// shader calls onto the core GL2 entry points).
 #ifdef __EMSCRIPTEN__
-		if (false)
+		if (!gl_available)
 #else
-		if (!OGL_CheckExtension("GL_ARB_vertex_shader") || !OGL_CheckExtension("GL_ARB_fragment_shader") || !OGL_CheckExtension("GL_ARB_shader_objects") || !OGL_CheckExtension("GL_ARB_shading_language_100"))
+		if (!gl_available || !OGL_CheckExtension("GL_ARB_vertex_shader") || !OGL_CheckExtension("GL_ARB_fragment_shader") || !OGL_CheckExtension("GL_ARB_shader_objects") || !OGL_CheckExtension("GL_ARB_shading_language_100"))
 #endif
 		{
 			logWarning("OpenGL (Shader) renderer is not available");
@@ -1005,6 +1020,7 @@ static void change_screen_mode(int width, int height, int depth, bool nogl, bool
 		// this, a fallback to software is silent and indistinguishable from
 		// "GL ran but drew nothing". Safe to remove once the renderer is
 		// known-good.
+		if (gl_available)
 		{
 			const char* ver = (const char*)glGetString(GL_VERSION);
 			const char* rend = (const char*)glGetString(GL_RENDERER);
@@ -1088,8 +1104,17 @@ static void change_screen_mode(int width, int height, int depth, bool nogl, bool
 	}
 #ifdef HAVE_OPENGL
 	if (!context_created && !nogl && screen_mode.acceleration != _no_acceleration) {
-		SDL_GL_CreateContext(main_screen);
-		context_created = true;
+		// Web port: same unchecked-return problem as above. Falling back here
+		// is enough on its own -- the software renderer is set up immediately
+		// below, keyed off exactly this flag.
+		if (SDL_GL_CreateContext(main_screen) != NULL) {
+			context_created = true;
+		} else {
+			logWarning("Could not create an OpenGL context (%s); using the software renderer", SDL_GetError());
+			fprintf(stderr, "WARNING: Could not create an OpenGL context (%s)\n", SDL_GetError());
+			fprintf(stderr, "WARNING: Retrying with Software renderer\n");
+			screen_mode.acceleration = graphics_preferences->screen_mode.acceleration = _no_acceleration;
+		}
 	}
 #endif
 	} // end if need_window
