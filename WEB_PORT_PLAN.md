@@ -3257,9 +3257,10 @@ overflow, the alSourcei parameter-whitelist trap, `AL_MAX_DISTANCE`/
         the code treated as success and reported a reset it had not performed.
         The delete now happens before the mount, and the persisted directory is
         cleared afterwards as a fallback.
-      - Added **TO_TEST.md**: a manual checklist covering every converted
-        dialog, the renderer features that have no automated coverage, and the
-        browser-specific behaviour. Nothing here can be tested without a real
+      - Added **TO_TEST.md**: a checkbox-per-item manual checklist, with every
+        popup, swatch and file row named individually (pulled out of the source
+        rather than described in the abstract) so it can be worked through
+        rather than interpreted. Nothing here can be tested without a real
         browser and real game data, so the checklist is the coverage.
       - Downgraded the `ALC_SOFT_loopback` fallback from `logError` to
         `logNote` -- it is the expected, working path here, and logging it as
