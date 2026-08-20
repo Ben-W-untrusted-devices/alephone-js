@@ -127,6 +127,15 @@ Screen Screen::m_instance;
 
 
 // Prototypes
+// Web port (see ../../WEB_PORT_PLAN.md, M6h): the GL context created below is
+// now tracked, because it has to be destroyed with the window that owns it.
+// SDL_GL_DeleteContext appeared nowhere in this engine, so every window
+// recreation leaked its context. On a desktop driver that is untidy; in a
+// browser each one is a live WebGL context, and browsers cap how many a page
+// may hold at once -- Safari's cap is much lower than Chrome's. Past the cap,
+// creation starts failing, and everything downstream of it fails with it.
+static SDL_GLContext main_gl_context = NULL;
+
 static bool need_mode_change(int window_width, int window_height, int log_width, int log_height, int depth, bool nogl);
 static void change_screen_mode(int width, int height, int depth, bool nogl, bool force_menu, bool force_resize_hud = false);
 static bool get_auto_resolution_size(short *w, short *h, struct screen_mode_data *mode);
@@ -922,6 +931,14 @@ static void change_screen_mode(int width, int height, int depth, bool nogl, bool
 		}
 	if (main_screen != NULL) {
 		Uint32 window_id = SDL_GetWindowID(main_screen);
+#ifdef HAVE_OPENGL
+		// Web port: must go before the window it belongs to, and must happen
+		// at all -- see the comment on main_gl_context.
+		if (main_gl_context != NULL) {
+			SDL_GL_DeleteContext(main_gl_context);
+			main_gl_context = NULL;
+		}
+#endif
 	    SDL_DestroyWindow(main_screen);
 		main_screen = NULL;
 		SDL_FilterEvents(change_window_filter, &window_id);
@@ -975,7 +992,8 @@ static void change_screen_mode(int width, int height, int depth, bool nogl, bool
 		// renderer, which is what happens for every other GL shortcoming.
 		bool gl_available = context_created;
 		if (!context_created) {
-			gl_available = (SDL_GL_CreateContext(main_screen) != NULL);
+			main_gl_context = SDL_GL_CreateContext(main_screen);
+			gl_available = (main_gl_context != NULL);
 			context_created = gl_available;
 			if (!gl_available) {
 				logWarning("Could not create an OpenGL context (%s)", SDL_GetError());
@@ -1107,7 +1125,8 @@ static void change_screen_mode(int width, int height, int depth, bool nogl, bool
 		// Web port: same unchecked-return problem as above. Falling back here
 		// is enough on its own -- the software renderer is set up immediately
 		// below, keyed off exactly this flag.
-		if (SDL_GL_CreateContext(main_screen) != NULL) {
+		main_gl_context = SDL_GL_CreateContext(main_screen);
+		if (main_gl_context != NULL) {
 			context_created = true;
 		} else {
 			logWarning("Could not create an OpenGL context (%s); using the software renderer", SDL_GetError());

@@ -99,6 +99,20 @@
           canvas: document.getElementById("canvas"),
           print: (text) => log(text),
           printErr: (text) => log("[stderr]", text),
+          // A failing assertion inside Emscripten's own JS (the GL emulation
+          // especially) aborts with nothing but "Assertion failed" -- no file,
+          // no line, and the stack only ever reaches console. That is not
+          // enough to act on, so capture the stack into the page log too,
+          // which is the surface actually being read when this happens.
+          onAbort: (what) => {
+            log("[abort]", String(what));
+            const stack = new Error().stack;
+            if (stack) {
+              for (const line of stack.split("\n").slice(1, 14)) {
+                log("[abort]  ", line.trim());
+              }
+            }
+          },
         });
 
         // Persist preferences/saved games/quicksaves across reloads via
@@ -186,13 +200,38 @@
         // diagnostic for whether unresponsive menu clicks are related to
         // it (e.g. input listeners bound against a pre-fullscreen element
         // reference).
-        Module.callMain(["--windowed", "/data"]);
+        // ?nogl forces the software renderer, via the engine's own --nogl
+        // option. Two uses: it is a way back in when the OpenGL path cannot
+        // start at all on a given browser (otherwise the tab is simply dead,
+        // and no amount of clearing storage helps, because the problem is not
+        // stored anywhere), and it isolates whether a startup failure is in GL
+        // initialisation or before it.
+        const engineArgs = ["--windowed"];
+        if (new URLSearchParams(location.search).has("nogl")) {
+          log("?nogl given -- forcing the software renderer.");
+          engineArgs.push("--nogl");
+        }
+        engineArgs.push("/data");
+        Module.callMain(engineArgs);
       } catch (err) {
         log("Failed to start:", err instanceof Error ? err.message : String(err));
         console.error(err);
         // Most ways of failing this late are a saved preference the engine
         // cannot cope with, and those survive a reload. Say so, and make the
         // recovery one click rather than something to be discovered.
+        // Offer the software renderer too: a startup failure inside GL
+        // initialisation is not a preference problem, and resetting
+        // preferences will not touch it.
+        const softwareButton = document.createElement("button");
+        softwareButton.textContent = "Reload with the software renderer";
+        softwareButton.style.cssText = "display:block;margin:1rem 0;padding:0.5rem 1rem";
+        softwareButton.addEventListener("click", () => {
+          const url = new URL(location.href);
+          url.searchParams.set("nogl", "");
+          location.href = url.toString();
+        });
+        document.body.appendChild(softwareButton);
+
         const recover = document.createElement("button");
         recover.textContent = "Reset preferences and reload";
         recover.style.cssText = "display:block;margin:1rem 0;padding:0.5rem 1rem";

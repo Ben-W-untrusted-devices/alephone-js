@@ -3265,6 +3265,38 @@ overflow, the alSourcei parameter-whitelist trap, `AL_MAX_DISTANCE`/
       - Downgraded the `ALC_SOFT_loopback` fallback from `logError` to
         `logNote` -- it is the expected, working path here, and logging it as
         an error made a healthy startup read as a failure.
+  - [x] **M6h — the leaked WebGL contexts behind the Safari brick.**
+        `?resetprefs` was confirmed working ("reset deleted", "cleared the
+        persisted directory") and Safari still aborted with freshly-read
+        default preferences -- which ruled out stored state entirely and
+        killed the theory the previous rounds were built on.
+      - `SDL_GL_DeleteContext` appears **nowhere** in this engine, while
+        `change_screen_mode()` destroys and recreates the window (and with it
+        creates a fresh GL context) on every mode change. On a desktop driver
+        that is untidy. In a browser each one is a live WebGL context, and
+        browsers cap how many a page may hold -- Safari's cap is far lower
+        than Chrome's. Past it, context creation starts failing and everything
+        downstream fails with it.
+      - That matches the whole history: Chrome tolerated it for a while and
+        then failed with `getParameter` on undefined (creation returning null);
+        Safari failed sooner and stayed failed, because startup itself changes
+        the mode several times; and opening Rendering Options -- another mode
+        change -- was what tipped it over. The context is now destroyed with
+        the window that owns it, which bounds the page to one.
+      - Added two things for the next time something fails this early, since
+        this round was spent inferring rather than reading: an `onAbort`
+        handler that puts the abort reason *and* a JS stack into the page log
+        (Emscripten's own JS asserts abort with nothing but "Assertion
+        failed", and the stack only ever reached the console), and `?nogl`,
+        which forces the software renderer through the engine's existing
+        `--nogl` option. The latter is both an escape hatch -- a browser that
+        cannot start the GL path is otherwise simply dead, with nothing to
+        clear -- and a bisect: if `?nogl` starts, the failure is in GL
+        initialisation.
+      - The startup-failure UI now offers "Reload with the software renderer"
+        alongside "Reset preferences and reload", since a failure inside GL
+        init is not a preference problem and resetting preferences will not
+        touch it.
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)
 
 ## Status

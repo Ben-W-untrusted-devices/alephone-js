@@ -138,7 +138,11 @@ before, so test each. The log reports `[pointerlock] acquired` / `released` /
 - [ ] Loading a saved game from disk (the "click anywhere" overlay appears and is hard to miss)
 - [ ] `?resetprefs` in the URL discards preferences and saved games, in Safari
 - [ ] `?resetprefs` in the URL discards preferences and saved games, in Chrome
-- [ ] If the engine fails to start, the "Reset preferences and reload" button appears and works
+- [ ] `?nogl` in the URL starts the game with the software renderer, in Safari
+- [ ] `?nogl` in the URL starts the game with the software renderer, in Chrome
+- [ ] If the engine fails to start, both the "Reload with the software renderer" and "Reset preferences and reload" buttons appear and work
+- [ ] Open Preferences → Graphics → Rendering Options, close it, and repeat ten times — the game keeps running (each screen-mode change used to leak a WebGL context)
+- [ ] Change screen size or renderer several times in a row — same check
 
 ## Sound
 
