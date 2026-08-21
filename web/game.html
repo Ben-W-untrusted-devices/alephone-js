@@ -78,6 +78,31 @@
       log(`[heartbeat ${heartbeatCount}] page is still responsive, ${new Date().toISOString()}`);
     }, 3000);
 
+    // Probes whether the browser will actually give out a working WebGL
+    // context right now. A context whose getParameter() returns null is a lost
+    // or refused one, and is worse than no context at all: it looks like a
+    // success to everything that asks.
+    function webGLLooksUsable() {
+      let probe = null;
+      try {
+        const canvas = document.createElement("canvas");
+        probe = canvas.getContext("webgl") || canvas.getContext("experimental-webgl");
+        if (!probe) return false;
+        if (probe.isContextLost && probe.isContextLost()) return false;
+        return probe.getParameter(probe.MAX_TEXTURE_IMAGE_UNITS) > 0;
+      } catch {
+        return false;
+      } finally {
+        // Hand the probe context straight back -- holding it would make the
+        // very shortage this is checking for slightly worse.
+        try {
+          probe?.getExtension("WEBGL_lose_context")?.loseContext();
+        } catch {
+          // nothing useful to do
+        }
+      }
+    }
+
     let currentFiles = [];
     const startButton = document.getElementById("start-button");
 
@@ -209,6 +234,20 @@
         const engineArgs = ["--windowed"];
         if (new URLSearchParams(location.search).has("nogl")) {
           log("?nogl given -- forcing the software renderer.");
+          engineArgs.push("--nogl");
+        } else if (!webGLLooksUsable()) {
+          // A browser will refuse to hand out any more WebGL contexts once too
+          // many are live across the whole browser, not just this page -- and
+          // what it hands back instead is a context whose queries all return
+          // null. Emscripten's GL emulation asserts on the first of those
+          // (MAX_TEXTURE_IMAGE_UNITS) and aborts the engine outright, before
+          // the main menu, with no way for the C++ side to catch it.
+          //
+          // Checking first turns that hard failure into a degraded but playable
+          // one. It costs a throwaway context on a path that is about to make
+          // a real one anyway.
+          log("WebGL is not usable right now -- falling back to the software renderer.");
+          log("(Another tab may be holding WebGL contexts; restarting the browser usually clears it.)");
           engineArgs.push("--nogl");
         }
         engineArgs.push("/data");

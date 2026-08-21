@@ -877,6 +877,20 @@ static void change_screen_mode(int width, int height, int depth, bool nogl, bool
 
 	
 	if (nogl || screen_mode.acceleration == _no_acceleration) {
+#ifdef __EMSCRIPTEN__
+		// Web port (see ../../WEB_PORT_PLAN.md, M6h): SDL's Emscripten
+		// renderer backend is opengles2, so "software rendering" still creates
+		// a WebGL context -- which is why --nogl did not actually avoid one,
+		// and died in exactly the same place. When OpenGL has been explicitly
+		// refused, force SDL's own software backend, which presents through
+		// the 2D canvas and touches WebGL not at all. That makes --nogl a real
+		// escape hatch from a browser that cannot currently hand out a working
+		// WebGL context. Left to the preference otherwise, since the
+		// opengles2-backed path is much faster and is the normal case.
+		if (shell_options.nogl) {
+			SDL_SetHint(SDL_HINT_RENDER_DRIVER, "software");
+		} else
+#endif
 		switch (graphics_preferences->software_sdl_driver) {
 			case _sw_driver_none:
 				SDL_SetHint(SDL_HINT_RENDER_DRIVER, "software");

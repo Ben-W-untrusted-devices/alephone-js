@@ -3297,6 +3297,34 @@ overflow, the alSourcei parameter-whitelist trap, `AL_MAX_DISTANCE`/
         alongside "Reset preferences and reload", since a failure inside GL
         init is not a preference problem and resetting preferences will not
         touch it.
+  - [x] **M6i — read the actual stack, and stopped guessing.** The `onAbort`
+        handler paid for itself immediately: the abort is
+        `assert(maxTexUnits > 0)` in the emulation's `TexEnvJIT.init`, reached
+        from `GLImmediate.init` via `_eglCreateContext`. That value comes from
+        `GLctx.getParameter(GL_MAX_TEXTURE_IMAGE_UNITS)`, and a WebGL context
+        returns null for *every* query once it is lost or was never really
+        granted. So the context is handed over and then is not usable -- which
+        is worse than an outright failure, because it looks like success to
+        everything that asks.
+      - Two reports settled the cause beyond inference: a second, unrelated
+        project in another tab was force-downgraded from WebGL to 2D canvas at
+        the same time, and restarting the browser fixed both. This is
+        browser-wide WebGL context exhaustion, not anything this page stores --
+        which is why every storage-clearing theory failed. M6h's leaked
+        contexts are the contribution this port was making to it.
+      - **`--nogl` did not actually avoid GL**, which the stack showed plainly
+        by aborting in the same place. SDL's Emscripten renderer backend is
+        opengles2, so even "software rendering" creates a WebGL context. When
+        OpenGL is explicitly refused, SDL's own software backend is now forced
+        instead; it presents through the 2D canvas and touches WebGL not at
+        all. Left to the preference otherwise, since the opengles2-backed path
+        is much faster and is the normal case.
+      - **The page now probes WebGL before starting** and falls back to the
+        software renderer by itself if a context cannot be obtained or answers
+        `MAX_TEXTURE_IMAGE_UNITS` with null. The engine cannot defend itself
+        here -- the abort happens inside Emscripten's JS, before any C++ runs
+        -- so checking first is the only place this can be caught. It turns a
+        dead tab into a degraded but playable one, and says why.
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)
 
 ## Status

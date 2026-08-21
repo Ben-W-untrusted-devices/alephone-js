@@ -140,6 +140,7 @@ before, so test each. The log reports `[pointerlock] acquired` / `released` /
 - [ ] `?resetprefs` in the URL discards preferences and saved games, in Chrome
 - [ ] `?nogl` in the URL starts the game with the software renderer, in Safari
 - [ ] `?nogl` in the URL starts the game with the software renderer, in Chrome
+- [ ] With many WebGL-using tabs open (or after exhausting contexts), the page logs "WebGL is not usable right now" and starts in software rather than aborting
 - [ ] If the engine fails to start, both the "Reload with the software renderer" and "Reset preferences and reload" buttons appear and work
 - [ ] Open Preferences → Graphics → Rendering Options, close it, and repeat ten times — the game keeps running (each screen-mode change used to leak a WebGL context)
 - [ ] Change screen size or renderer several times in a row — same check
