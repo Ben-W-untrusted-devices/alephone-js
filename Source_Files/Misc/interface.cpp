@@ -1090,28 +1090,12 @@ bool idle_game_state(uint64_t time)
 				case _display_intro_screens_for_demo:
 				case _display_main_menu:
 					/* Start the demo.. */
-#ifdef __EMSCRIPTEN__
-					// Web port (see ../../WEB_PORT_PLAN.md, M4h): confirmed via a
-					// real browser session that this is what a menu click
-					// appeared to hang on -- not the click handling itself, but
-					// this 30s idle auto-demo timer (TICKS_UNTIL_DEMO_STARTS)
-					// expiring and firing begin_game(_demo, ...) on the very next
-					// idle tick after any click, landing in demo/replay loading
-					// code that's never been exercised (let alone converted off
-					// blocking constructs) on this port. Demo auto-play isn't
-					// part of any milestone yet, so just don't arm it here,
-					// rather than chase blocking calls inside a feature nobody's
-					// verified works at all yet.
-					fprintf(stderr, "[idle_game_state] auto-demo timer expired (skipped on web port)\n");
-					game_state.phase = TICKS_UNTIL_DEMO_STARTS;
-#else
 					if(!environment_preferences->auto_play_demos ||
 					   !begin_game(_demo, false))
 					{
 						/* This means that there was not a valid demo to play */
 						game_state.phase= TICKS_UNTIL_DEMO_STARTS;
 					}
-#endif
 					break;
 
 				case _close_game:

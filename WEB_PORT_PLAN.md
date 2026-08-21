@@ -3325,6 +3325,26 @@ overflow, the alSourcei parameter-whitelist trap, `AL_MAX_DISTANCE`/
         here -- the abort happens inside Emscripten's JS, before any C++ runs
         -- so checking first is the only place this can be caught. It turns a
         dead tab into a degraded but playable one, and says why.
+  - [x] **M6j — attract mode (auto-playing demos) enabled.** The 30s idle
+        timer on the main menu was stubbed out during M4h, when firing
+        `begin_game(_demo, ...)` landed in demo/replay loading that had not
+        been converted off blocking constructs and hung the tab. That is no
+        longer true, so the stub is removed rather than left as a permanent
+        gap.
+      - Checked the path end to end before re-enabling rather than just
+        deleting the guard: `setup_replay_from_random_resource()` only scans
+        `Demos/` and picks a film; `setup_for_replay_from_file()`'s one dialog
+        is `alert_user()` on a missing map, which is cooperative now, and its
+        `PromptForRecording()` is gated behind `prompt_to_export`, false here.
+        `_demo` also skips the chapter screen in `begin_game()`, so it reaches
+        `continue_starting_game()` synchronously with no continuation to
+        thread. The exits are equally clean: the film ending sets
+        `_switch_demo` from `vbl.cpp`, any key does the same via
+        `player_controlling_game()` being false, and Escape takes
+        `iQuitGame`'s `_demo` branch, which quits without a confirmation
+        dialog.
+      - Confirmed the local scenario actually has films to play (three), so
+        this does something rather than silently rearming the timer.
 - [ ] **M7 (stretch, likely deferred) — Networking** (SDL_net/TCPMess)
 
 ## Status

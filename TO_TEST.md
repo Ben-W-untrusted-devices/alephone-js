@@ -98,6 +98,18 @@ And the LOAD OTHER button inside those lists, which opens a file browser:
 - [ ] `Replay Saved Film` — cancel returns to the main menu
 - [ ] `Begin New Game` while holding the cheat modifier — vidmaster level chooser appears, picking a level starts there, cancel returns to the menu, and the game does not start twice
 
+## Attract mode (auto-playing demos)
+
+Needs demo films present (`Demos/*.filA` in the scenario folder) and
+Preferences → Environment → `Play Demos When Idle` enabled.
+
+- [ ] Leave the main menu untouched for 30 seconds — a demo starts playing
+- [ ] Pressing a key or clicking during the demo returns to the intro screens / main menu
+- [ ] Letting a demo run to its end returns to the intro screens / main menu on its own
+- [ ] A second demo starts after the menu goes idle again, and it is not always the same film
+- [ ] Turning `Play Demos When Idle` off stops it happening
+- [ ] Escape during a demo returns to the main menu without the "cancel the game in progress?" prompt
+
 ## In game
 
 - [ ] `Escape` — "cancel the game in progress?" appears; YES returns to the main menu, NO resumes
